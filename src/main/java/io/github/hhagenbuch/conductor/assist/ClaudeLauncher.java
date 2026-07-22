@@ -49,6 +49,10 @@ public final class ClaudeLauncher implements AssistSpawner.Launcher {
                     "claude", "-p", prompt,
                     "--session-id", spec.helperId(),
                     "--mcp-config", mcpConfig.toString(),
+                    // Isolate the helper to conductor's bus only: without this it
+                    // also inherits the user's global MCP servers, which is slow
+                    // and leaks unrelated tools into a scoped helper.
+                    "--strict-mcp-config",
                     "--model", model,
                     "--output-format", "json"));
             if (!spec.allowedTools().isEmpty()) {
@@ -60,6 +64,7 @@ public final class ClaudeLauncher implements AssistSpawner.Launcher {
         var log = spec.worktree().resolve(".conductor-helper.log").toFile();
         var pb = new ProcessBuilder(cmd)
                 .directory(spec.worktree().toFile())
+                .redirectInput(new File("/dev/null")) // headless: don't wait on stdin
                 .redirectOutput(log)
                 .redirectError(log);
         // Expose the helper's context to an overridden leaf via the environment.

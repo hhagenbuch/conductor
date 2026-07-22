@@ -170,6 +170,34 @@
           }
         }
       ]
+    },
+    {
+      "tool": "assist",
+      "description": "Spawn a helper session to finish your job faster. Name the slice (task) and the lease-disjoint scopes it should claim; the helper works in its own git worktree, is briefed on your work, and integrates via a PR. Use when you have lease-disjoint work a second session could do in parallel.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "The slice the helper should take (names the split; no auto-decomposition)." },
+          "claim": { "type": "array", "description": "Lease-disjoint scopes the helper should claim (repo:, path:<glob>, branch:<name>).", "items": { "type": "string" } },
+          "allow": { "type": "array", "description": "Tools the helper may use without prompting (e.g. Read, Edit, Write, Bash).", "items": { "type": "string" } },
+          "model": { "type": "string", "description": "Optional model for the helper (default sonnet)." }
+        },
+        "required": ["task"]
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "assist with a missing/blank task returns a helpful text error, not a crash",
+          "input": { "task": "" },
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -1,0 +1,54 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Build and test
+        run: mvn -B verify
+
+      # The clean-room pattern lives in a repo secret: a check that publishes
+      # the strings it exists to conceal is not a clean-room check. Unset (on
+      # forks) -> warn and skip, never fail.
+      - name: Clean-room grep
+        env:
+          FORBIDDEN_PATTERN: ${{ secrets.FORBIDDEN_PATTERN }}
+        run: |
+          if [ -z "$FORBIDDEN_PATTERN" ]; then
+            echo "::warning::FORBIDDEN_PATTERN secret not set - clean-room grep skipped"
+            exit 0
+          fi
+          if grep -riE "$FORBIDDEN_PATTERN" --exclude-dir=target --exclude-dir=.git .; then
+            echo "::error::forbidden reference found - this repo is clean-room"
+            exit 1
+          fi
+
+  # Dogfood: the bus's own MCP surface is contract-tested with mcp-pact, so a
+  # rename or schema change to who_else/post/inbox becomes a red build.
+  pact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Build the shaded jar (the MCP shim under test)
+        run: mvn -B -DskipTests package
+      - name: Verify the bus pact
+        uses: hhagenbuch/mcp-pact@v1.1.4
+        with:
+          pact: pacts/conductor-bus.mcp-pact.json
+          server-command: java -jar target/conductor.jar mcp-shim
+          strict: 'true'

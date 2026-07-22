@@ -1,0 +1,77 @@
+{
+  "pactVersion": "0.1",
+  "consumer": "conductor-cli",
+  "provider": "conductor-bus",
+  "expectations": [
+    {
+      "tool": "who_else",
+      "description": "List other Claude Code sessions working on this project (and their freshness), so you can coordinate instead of colliding.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "who_else returns a text content block and a boolean isError",
+          "input": {},
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "post",
+      "description": "Send a short message to another session's inbox. Address it by session id or an unambiguous id prefix.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "string", "description": "Recipient session id or unambiguous id prefix." },
+          "message": { "type": "string", "description": "The message body." }
+        },
+        "required": ["to", "message"]
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "post accepts to+message and returns a text result",
+          "input": { "to": "nobody-here", "message": "ping" },
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "inbox",
+      "description": "Read messages other sessions have sent you. Check it at natural boundaries: task start, before commits or PRs, and when you are blocked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "inbox returns a text content block and a boolean isError",
+          "input": {},
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

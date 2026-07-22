@@ -101,6 +101,9 @@ public final class McpShim {
         tools.add(tool("brief_me",
                 "Get a briefing bundle for a session (yours or another's): its task, redacted progress digest, files touched, and leases held. Call it when you join a project or before decisions that depend on another session's state.",
                 briefSchema()));
+        tools.add(tool("assist",
+                "Spawn a helper session to finish your job faster. Name the slice (task) and the lease-disjoint scopes it should claim; the helper works in its own git worktree, is briefed on your work, and integrates via a PR. Use when you have lease-disjoint work a second session could do in parallel.",
+                assistSchema()));
         var r = JSON.createObjectNode();
         r.set("tools", tools);
         return r;
@@ -126,6 +129,7 @@ public final class McpShim {
                 case "release" -> release(port, args);
                 case "leases" -> leases(port);
                 case "brief_me" -> briefMe(port, args);
+                case "assist" -> assist(port, args);
                 default -> textResult("conductor: unknown tool " + name, true);
             };
         } catch (Exception e) {
@@ -278,6 +282,38 @@ public final class McpShim {
         return textResult(root.path("briefing").asText(), false);
     }
 
+    private ObjectNode assist(int port, JsonNode args) throws Exception {
+        var task = args.path("task").asText("");
+        if (task.isBlank()) {
+            return textResult("assist needs a 'task' naming the helper's slice.", true);
+        }
+        var payload = JSON.createObjectNode();
+        payload.put("parent", sessionId);
+        payload.put("task", task);
+        if (!args.path("model").asText("").isBlank()) {
+            payload.put("model", args.path("model").asText());
+        }
+        var scopes = payload.putArray("scopes");
+        args.path("claim").forEach(n -> scopes.add(n.asText()));
+        var allowed = payload.putArray("allowedTools");
+        args.path("allow").forEach(n -> allowed.add(n.asText()));
+
+        var resp = client.postJson(port, "/api/assist", payload.toString());
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; no helper spawned.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        if (!root.path("ok").asBoolean(false)) {
+            return textResult("assist failed (helper cleaned up): "
+                    + root.path("error").asText("unknown"), true);
+        }
+        return textResult("Spawned helper " + shortId(root.path("helper_id").asText())
+                + " on branch " + root.path("branch").asText()
+                + " (worktree " + root.path("worktree").asText() + "). It holds its claimed "
+                + "scopes, is briefed on your work, and will integrate via PR. Watch `who_else` "
+                + "and your `inbox` for its progress.", false);
+    }
+
     // ---- MCP encoding helpers ----
 
     private ObjectNode tool(String name, String description, ObjectNode inputSchema) {
@@ -306,6 +342,26 @@ public final class McpShim {
         props.putObject("ttlMinutes").put("type", "number")
                 .put("description", "Optional lease lifetime in minutes (default 60).");
         s.putArray("required").add("scope");
+        return s;
+    }
+
+    private ObjectNode assistSchema() {
+        var s = JSON.createObjectNode();
+        s.put("type", "object");
+        var props = s.putObject("properties");
+        props.putObject("task").put("type", "string")
+                .put("description", "The slice the helper should take (names the split; no auto-decomposition).");
+        var claim = props.putObject("claim");
+        claim.put("type", "array").put("description",
+                "Lease-disjoint scopes the helper should claim (repo:, path:<glob>, branch:<name>).");
+        claim.putObject("items").put("type", "string");
+        var allow = props.putObject("allow");
+        allow.put("type", "array").put("description",
+                "Tools the helper may use without prompting (e.g. Read, Edit, Write, Bash).");
+        allow.putObject("items").put("type", "string");
+        props.putObject("model").put("type", "string")
+                .put("description", "Optional model for the helper (default sonnet).");
+        s.putArray("required").add("task");
         return s;
     }
 

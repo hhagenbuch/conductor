@@ -41,6 +41,28 @@ class RegistryTest {
     }
 
     @Test
+    void liveSessionsExcludesStaleAndEnded(@TempDir Path dir) throws Exception {
+        var clock = new TestClock();
+        try (var reg = open(dir, clock)) {
+            reg.register("live-1", "/repo/a", "main", "/repo/a", null, false);
+            reg.register("stale-1", "/repo/b", "feature/x", "/repo/b", null, false);
+            reg.register("ended-1", "/repo/c", "main", "/repo/c", null, false);
+            reg.end("ended-1");
+            // age everyone, then refresh only live-1 so stale-1 falls past TTL.
+            clock.advance(Duration.ofMillis(Registry.STALE_AFTER_MS + 1));
+            reg.heartbeat("live-1");
+
+            var live = reg.liveSessions();
+            assertEquals(1, live.size(), "only the active session is live");
+            var s = live.getFirst();
+            assertEquals("live-1", s.sessionId());
+            // the seam carries repo identity + branch for impact mapping
+            assertEquals("/repo/a", s.projectDir());
+            assertEquals("main", s.gitBranch());
+        }
+    }
+
+    @Test
     void goesStaleButNeverVanishes(@TempDir Path dir) throws Exception {
         var clock = new TestClock();
         try (var reg = open(dir, clock)) {

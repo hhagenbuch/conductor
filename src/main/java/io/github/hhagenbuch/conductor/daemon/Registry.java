@@ -251,6 +251,17 @@ public final class Registry implements AutoCloseable {
         }
     }
 
+    /// Impact-awareness seam (a): live (non-stale, non-ended) sessions across
+    /// all projects, each carrying its project repo identity ({@code projectDir})
+    /// and git branch. Phase 6's impact engine (RUNBOOK-15) uses this to map a
+    /// changed graph entity to the sessions currently working the affected
+    /// repos. A read-only projection over {@link #sessions}; no behavior change.
+    public synchronized List<Session> liveSessions() throws SQLException {
+        return sessions(null).stream()
+                .filter(s -> s.status().equals("active"))
+                .toList();
+    }
+
     /// Other sessions sharing the given session's project (by the canonical
     /// repo identity recorded at registration). Excludes the session itself.
     /// The project is resolved server-side, so callers never recompute git

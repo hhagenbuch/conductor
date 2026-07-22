@@ -48,14 +48,19 @@ public final class Installer {
     public int init(Path project) {
         try {
             var script = writeHookScript();
+            var enforceScript = writeEnforceScript();
             var settingsFile = project.resolve(".claude").resolve("settings.local.json");
             Files.createDirectories(settingsFile.getParent());
             ObjectNode settings = readOrEmpty(settingsFile);
             ObjectNode hooks = objectChild(settings, "hooks");
 
             for (var ev : HOOK_EVENTS) {
-                installEvent(hooks, ev[0], ev[1], script);
+                installEvent(hooks, ev[0], ev[1], script, ev[0]);
             }
+            // Lease enforcement: a PreToolUse hook on the mutating tools that
+            // relays the daemon's allow/deny decision.
+            installEvent(hooks, "PreToolUse", "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                    enforceScript, "");
             writePretty(settingsFile, settings);
 
             System.out.println("conductor: installed session hooks into " + settingsFile);
@@ -106,7 +111,7 @@ public final class Installer {
 
     // ---- settings.json surgery ----
 
-    private void installEvent(ObjectNode hooks, String event, String matcher, Path script) {
+    private void installEvent(ObjectNode hooks, String event, String matcher, Path script, String arg) {
         ArrayNode groups = hooks.get(event) instanceof ArrayNode a ? a : hooks.putArray(event);
         // Idempotent: drop any prior conductor group for this event first.
         stripConductor(groups);
@@ -117,7 +122,9 @@ public final class Installer {
         }
         ObjectNode hook = group.putArray("hooks").addObject();
         hook.put("type", "command");
-        hook.put("command", "\"" + script + "\" " + event);
+        hook.put("command", arg == null || arg.isBlank()
+                ? "\"" + script + "\""
+                : "\"" + script + "\" " + arg);
         hook.put("timeout", 5);
     }
 
@@ -168,10 +175,53 @@ public final class Installer {
         return script;
     }
 
+    /// The PreToolUse enforcement script: a dumb relay. It POSTs the tool call
+    /// to the daemon and, only if the daemon returns an explicit deny, prints
+    /// that JSON verbatim (exit 0 with a deny in stdout is how a tool is
+    /// blocked). Anything else ... allow, empty, timeout, down bus, parse
+    /// error ... exits 0 and allows. Enforcement fails OPEN.
+    Path writeEnforceScript() throws IOException {
+        var script = home.dir().resolve("conductor-enforce.sh");
+        Files.writeString(script, ENFORCE_SCRIPT);
+        try {
+            Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"));
+        } catch (UnsupportedOperationException ignored) {
+            // non-POSIX FS
+        }
+        return script;
+    }
+
     private static String jarPath() {
         return new java.io.File(Installer.class.getProtectionDomain()
                 .getCodeSource().getLocation().getPath()).getAbsolutePath();
     }
+
+    static final String ENFORCE_SCRIPT = """
+        #!/usr/bin/env bash
+        # conductor lease enforcement (PreToolUse). Fails OPEN: only an explicit
+        # daemon "deny" blocks; any error, empty reply, timeout, or down bus
+        # allows the tool. A dead coordinator must never stop work.
+        set +e
+        HOME_DIR="${CONDUCTOR_HOME:-$HOME/.conductor}"
+        PORT_FILE="$HOME_DIR/daemon.port"
+        PAYLOAD="$(cat)"
+        PORT="$(cat "$PORT_FILE" 2>/dev/null)"
+        [ -z "$PORT" ] && exit 0
+
+        RESP="$(printf '%s' "$PAYLOAD" | curl -s -m 1 \\
+          -H 'Content-Type: application/json' --data-binary @- \\
+          "http://127.0.0.1:$PORT/api/enforce" 2>/dev/null)"
+        [ -z "$RESP" ] && exit 0
+
+        # The daemon returns the exact PreToolUse hook JSON on a block; relay it
+        # verbatim so the reason reaches the model unmangled.
+        case "$RESP" in
+          *'"permissionDecision":"deny"'*)
+            printf '%s' "$RESP"
+            ;;
+        esac
+        exit 0
+        """;
 
     /// Fails open on every path. `set +e`, `exit 0` at the end, curl bounded
     /// by `-m 1`. The daemon is started only on SessionStart, only if down.

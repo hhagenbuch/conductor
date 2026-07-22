@@ -62,6 +62,49 @@ class InstallerTest {
     }
 
     @Test
+    void installsPreToolUseEnforcementHook(@TempDir Path tmp) throws Exception {
+        var project = tmp.resolve("proj");
+        var settings = project.resolve(".claude").resolve("settings.local.json");
+        installer(tmp).init(project);
+
+        JsonNode root = JSON.readTree(Files.readString(settings));
+        var pre = root.path("hooks").path("PreToolUse");
+        assertTrue(pre.isArray() && !pre.isEmpty());
+        boolean found = false;
+        for (var g : pre) {
+            if (g.path(Installer.MARKER).asBoolean(false)) {
+                found = true;
+                assertTrue(g.path("matcher").asText().contains("Bash"),
+                        "enforcement must cover Bash (git incident class)");
+                assertTrue(g.path("matcher").asText().contains("Write"));
+                assertTrue(g.path("hooks").get(0).path("command").asText().contains("conductor-enforce.sh"));
+            }
+        }
+        assertTrue(found, "PreToolUse enforcement hook not installed");
+    }
+
+    @Test
+    void enforceScriptFailsOpen(@TempDir Path tmp) throws Exception {
+        var script = installer(tmp).writeEnforceScript();
+        assertTrue(Files.isExecutable(script));
+        var body = Files.readString(script);
+        assertTrue(body.contains("exit 0"), "enforcement must default to allow");
+        assertTrue(body.contains("-z \"$RESP\""), "empty daemon reply must fail open");
+        assertTrue(body.contains("permissionDecision"), "only an explicit deny blocks");
+    }
+
+    @Test
+    void removeStripsEnforcementHookToo(@TempDir Path tmp) throws Exception {
+        var project = tmp.resolve("proj");
+        var settings = project.resolve(".claude").resolve("settings.local.json");
+        var inst = installer(tmp);
+        inst.init(project);
+        inst.remove(project);
+        JsonNode root = JSON.readTree(Files.readString(settings));
+        assertFalse(root.has("hooks"), "remove must leave no conductor hooks, PreToolUse included");
+    }
+
+    @Test
     void initIsIdempotent(@TempDir Path tmp) throws Exception {
         var project = tmp.resolve("proj");
         var settings = project.resolve(".claude").resolve("settings.local.json");

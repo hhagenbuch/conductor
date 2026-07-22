@@ -8,6 +8,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.hhagenbuch.conductor.ConductorHome;
 import io.github.hhagenbuch.conductor.Main;
+import io.github.hhagenbuch.conductor.lease.Enforcer;
+import io.github.hhagenbuch.conductor.lease.Lease;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -17,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 
@@ -87,6 +91,14 @@ public final class Daemon {
                     handlePost(registry, ex);
                 } else if (method.equals("GET") && path.equals("/api/inbox")) {
                     handleInbox(registry, ex);
+                } else if (method.equals("POST") && path.equals("/api/lease/claim")) {
+                    handleClaim(registry, ex);
+                } else if (method.equals("POST") && path.equals("/api/lease/release")) {
+                    handleRelease(registry, ex);
+                } else if (method.equals("GET") && path.equals("/api/leases")) {
+                    handleLeases(registry, ex);
+                } else if (method.equals("POST") && path.equals("/api/enforce")) {
+                    handleEnforce(registry, ex);
                 } else {
                     respond(ex, 404, JSON.createObjectNode().put("error", "not found"));
                 }
@@ -145,6 +157,106 @@ public final class Daemon {
         }
         ObjectNode out = JSON.createObjectNode();
         out.set("messages", arr);
+        respond(ex, 200, out);
+    }
+
+    private static void handleClaim(Registry registry, HttpExchange ex) throws Exception {
+        JsonNode body = JSON.readTree(ex.getRequestBody());
+        var session = text(body, "session");
+        var self = registry.session(session);
+        if (self.isEmpty()) {
+            respond(ex, 404, JSON.createObjectNode().put("error", "unknown session " + session));
+            return;
+        }
+        try {
+            var parsed = Lease.parseScope(text(body, "scope"));
+            long ttl = body.has("ttlMs") ? body.get("ttlMs").asLong() : Registry.DEFAULT_LEASE_TTL_MS;
+            var lease = registry.claim(session, self.get().projectDir(), parsed.kind(),
+                    parsed.pattern(), ttl, text(body, "note"));
+            respond(ex, 200, JSON.createObjectNode()
+                    .put("ok", true).put("id", lease.id()).put("scope", lease.scopeString())
+                    .put("expires_at", lease.expiresAt()));
+        } catch (IllegalArgumentException bad) {
+            respond(ex, 400, JSON.createObjectNode().put("error", bad.getMessage()));
+        }
+    }
+
+    private static void handleRelease(Registry registry, HttpExchange ex) throws Exception {
+        JsonNode body = JSON.readTree(ex.getRequestBody());
+        boolean released = registry.release(text(body, "session"), body.path("id").asLong(-1));
+        respond(ex, released ? 200 : 404, JSON.createObjectNode()
+                .put("ok", released)
+                .put("error", released ? null : "no such lease held by you"));
+    }
+
+    private static void handleLeases(Registry registry, HttpExchange ex) throws Exception {
+        var session = queryParam(ex, "session");
+        List<Lease> leases;
+        if (session != null) {
+            var self = registry.session(session);
+            leases = self.isPresent() ? registry.activeLeases(self.get().projectDir()) : List.of();
+        } else {
+            leases = registry.allActiveLeases();
+        }
+        ArrayNode arr = JSON.createArrayNode();
+        for (var l : leases) {
+            arr.add(JSON.createObjectNode()
+                    .put("id", l.id()).put("session_id", l.sessionId())
+                    .put("scope", l.scopeString()).put("expires_at", l.expiresAt())
+                    .put("note", l.note()));
+        }
+        ObjectNode out = JSON.createObjectNode();
+        out.set("leases", arr);
+        respond(ex, 200, out);
+    }
+
+    /// The lease-check the PreToolUse hook consults. Fails OPEN on anything it
+    /// cannot evaluate: an unknown session, a malformed payload, or an internal
+    /// error all return "allow", never a block. A coordinator that is unsure
+    /// must not stop work.
+    private static void handleEnforce(Registry registry, HttpExchange ex) throws Exception {
+        JsonNode payload = JSON.readTree(ex.getRequestBody());
+        var session = text(payload, "session_id");
+        var toolName = text(payload, "tool_name");
+        var input = payload.path("tool_input");
+        var filePath = text(input, "file_path");
+        var command = text(input, "command");
+
+        var self = session == null ? Optional.<Registry.Session>empty() : registry.session(session);
+        if (self.isEmpty()) {
+            respond(ex, 200, JSON.createObjectNode().put("block", false));
+            return;
+        }
+        var repoId = self.get().projectDir();
+        var branch = self.get().gitBranch();
+
+        var others = registry.activeLeases(repoId).stream()
+                .filter(l -> !l.sessionId().equals(session))
+                .toList();
+
+        // Resolve holder labels (short id + stated task) for the message.
+        var labels = new java.util.HashMap<String, String>();
+        for (var s : registry.sessions(repoId)) {
+            var lbl = s.sessionId().substring(0, Math.min(8, s.sessionId().length()));
+            if (s.statedTask() != null && !s.statedTask().isBlank()) {
+                lbl = lbl + " (" + s.statedTask() + ")";
+            }
+            labels.put(s.sessionId(), lbl);
+        }
+        Enforcer.HolderLabel label = id -> labels.getOrDefault(id, id.substring(0, Math.min(8, id.length())));
+
+        var decision = Enforcer.decide(repoId, branch, toolName, filePath, command, others, label);
+        if (!decision.block()) {
+            respond(ex, 200, JSON.createObjectNode().put("block", false));
+            return;
+        }
+        // On block, return the exact PreToolUse hook JSON so the shell hook can
+        // relay it verbatim without reconstructing (and mis-escaping) the reason.
+        var out = JSON.createObjectNode();
+        var hso = out.putObject("hookSpecificOutput");
+        hso.put("hookEventName", "PreToolUse");
+        hso.put("permissionDecision", "deny");
+        hso.put("permissionDecisionReason", decision.reason());
         respond(ex, 200, out);
     }
 

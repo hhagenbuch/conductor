@@ -1,5 +1,7 @@
 package io.github.hhagenbuch.conductor.daemon;
 
+import io.github.hhagenbuch.conductor.lease.Lease;
+
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -62,7 +64,106 @@ public final class Registry implements AutoCloseable {
                   created_at   INTEGER NOT NULL,
                   read_at      INTEGER
                 )""");
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS leases (
+                  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id  TEXT NOT NULL,
+                  repo_id     TEXT NOT NULL,
+                  kind        TEXT NOT NULL,
+                  pattern     TEXT NOT NULL,
+                  created_at  INTEGER NOT NULL,
+                  expires_at  INTEGER NOT NULL,
+                  note        TEXT
+                )""");
         }
+    }
+
+    // ---- leases ----
+
+    /// Default lease TTL when the caller does not specify one.
+    public static final long DEFAULT_LEASE_TTL_MS = 60 * 60_000;
+
+    public synchronized Lease claim(String sessionId, String repoId, Lease.Kind kind,
+                                    String pattern, long ttlMs, String note) throws SQLException {
+        long now = clock.millis();
+        long expires = now + ttlMs;
+        try (var ps = conn.prepareStatement(
+                "INSERT INTO leases (session_id, repo_id, kind, pattern, created_at, expires_at, note)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                java.sql.Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, sessionId);
+            ps.setString(2, repoId);
+            ps.setString(3, kind.name());
+            ps.setString(4, pattern);
+            ps.setLong(5, now);
+            ps.setLong(6, expires);
+            ps.setString(7, note);
+            ps.executeUpdate();
+            try (var keys = ps.getGeneratedKeys()) {
+                keys.next();
+                return new Lease(keys.getLong(1), sessionId, repoId, kind, pattern, now, expires, note);
+            }
+        }
+    }
+
+    /// Release one lease by id, only if the caller owns it. Returns true if a
+    /// lease was released.
+    public synchronized boolean release(String sessionId, long leaseId) throws SQLException {
+        try (var ps = conn.prepareStatement(
+                "DELETE FROM leases WHERE id = ? AND session_id = ?")) {
+            ps.setLong(1, leaseId);
+            ps.setString(2, sessionId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    public synchronized int releaseAllForSession(String sessionId) throws SQLException {
+        try (var ps = conn.prepareStatement("DELETE FROM leases WHERE session_id = ?")) {
+            ps.setString(1, sessionId);
+            return ps.executeUpdate();
+        }
+    }
+
+    /// Active (non-expired) leases in a repo. Expired leases are pruned lazily
+    /// here so a crashed holder's leases free up on the next read.
+    public synchronized List<Lease> activeLeases(String repoId) throws SQLException {
+        pruneExpired();
+        var out = new ArrayList<Lease>();
+        try (var ps = conn.prepareStatement(
+                "SELECT * FROM leases WHERE repo_id = ? ORDER BY created_at")) {
+            ps.setString(1, repoId);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(toLease(rs));
+                }
+            }
+        }
+        return out;
+    }
+
+    public synchronized List<Lease> allActiveLeases() throws SQLException {
+        pruneExpired();
+        var out = new ArrayList<Lease>();
+        try (var ps = conn.prepareStatement("SELECT * FROM leases ORDER BY repo_id, created_at");
+             var rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(toLease(rs));
+            }
+        }
+        return out;
+    }
+
+    private void pruneExpired() throws SQLException {
+        try (var ps = conn.prepareStatement("DELETE FROM leases WHERE expires_at <= ?")) {
+            ps.setLong(1, clock.millis());
+            ps.executeUpdate();
+        }
+    }
+
+    private Lease toLease(ResultSet rs) throws SQLException {
+        return new Lease(rs.getLong("id"), rs.getString("session_id"), rs.getString("repo_id"),
+                Lease.Kind.valueOf(rs.getString("kind")), rs.getString("pattern"),
+                rs.getLong("created_at"), rs.getLong("expires_at"), rs.getString("note"));
     }
 
     public synchronized void register(String sessionId, String projectDir, String gitBranch,
@@ -117,7 +218,9 @@ public final class Registry implements AutoCloseable {
             ps.setString(2, sessionId);
             ps.executeUpdate();
         }
-        // Phase 2: release this session's leases here, in the same transaction.
+        // A cleanly-ended session holds no leases; TTL covers crashes and kills
+        // where SessionEnd never fires.
+        releaseAllForSession(sessionId);
     }
 
     /// Sessions for one project (canonical absolute path), or all when null.

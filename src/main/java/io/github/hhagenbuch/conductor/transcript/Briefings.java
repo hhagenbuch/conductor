@@ -4,6 +4,7 @@ import io.github.hhagenbuch.conductor.daemon.Registry;
 
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.List;
 
 /// Builds a briefing bundle for a session from the registry + its consented,
 /// redacted transcript digest + the leases it holds. Shared by the `brief_me`
@@ -41,6 +42,29 @@ public final class Briefings {
                 session.gitBranch(), session.statedTask(), session.lastSeen(), consented);
         var bundle = BriefingComposer.compose(parent, digest, leaseLines, consented, now);
         return new Result(bundle, consented, tailed);
+    }
+
+    /// Impact-awareness seam (b): a session's recent changed-file set, taken
+    /// from its redacted transcript digest (the files it touched, for mapping
+    /// to graph entities in Phase 6 / RUNBOOK-15).
+    ///
+    /// Consent-gated like every transcript read: returns an empty list if the
+    /// session's project has not granted observation, or if the transcript is
+    /// missing/unreadable. Never throws, never returns unredacted content.
+    public static List<String> changedFiles(Registry.Session session) {
+        if (session == null || session.transcriptPath() == null) {
+            return List.of();
+        }
+        var projectRoot = session.worktree() != null ? Path.of(session.worktree())
+                                                     : Path.of(session.projectDir());
+        if (!Consent.isGranted(projectRoot)) {
+            return List.of();
+        }
+        try {
+            return TranscriptDigest.fromFile(Path.of(session.transcriptPath())).filesTouched();
+        } catch (Exception unreadable) {
+            return List.of();
+        }
     }
 
     private Briefings() {

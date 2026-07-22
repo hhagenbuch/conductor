@@ -166,6 +166,26 @@ class InstallerTest {
         assertEquals(0, installer(tmp).remove(project));
     }
 
+    /// Phase 4 safety: assist spawns processes and writes worktree files, but
+    /// must NOT alter the user's hook settings. A broken SessionStart hook
+    /// degrades every session on the machine, so `remove` must always fully
+    /// restore the pre-install settings ... proven here as an early guard, not
+    /// left to the end of the phase. (Assist writes only inside the helper's
+    /// worktree — .conductor-briefing.md / .conductor-mcp.json — never into
+    /// .claude/settings; this asserts the round-trip is clean regardless.)
+    @Test
+    void initThenRemoveRoundTripsToNothing(@TempDir Path tmp) throws Exception {
+        var project = tmp.resolve("proj");
+        var settings = project.resolve(".claude").resolve("settings.local.json");
+        var inst = installer(tmp);
+        inst.init(project);
+        assertTrue(Files.size(settings) > 0);
+        inst.remove(project);
+        var root = JSON.readTree(Files.readString(settings));
+        assertFalse(root.has("hooks"), "no conductor hooks may remain after remove");
+        assertEquals(0, root.size(), "an otherwise-empty project is left with empty settings, no residue");
+    }
+
     @Test
     void hookScriptFailsOpenAndIsExecutable(@TempDir Path tmp) throws Exception {
         var inst = installer(tmp);

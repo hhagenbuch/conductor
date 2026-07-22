@@ -10,6 +10,11 @@ import io.github.hhagenbuch.conductor.ConductorHome;
 import io.github.hhagenbuch.conductor.Main;
 import io.github.hhagenbuch.conductor.lease.Enforcer;
 import io.github.hhagenbuch.conductor.lease.Lease;
+import io.github.hhagenbuch.conductor.transcript.BriefingComposer;
+import io.github.hhagenbuch.conductor.transcript.Consent;
+import io.github.hhagenbuch.conductor.transcript.TranscriptDigest;
+
+import java.nio.file.Path;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -99,6 +104,8 @@ public final class Daemon {
                     handleLeases(registry, ex);
                 } else if (method.equals("POST") && path.equals("/api/enforce")) {
                     handleEnforce(registry, ex);
+                } else if (method.equals("GET") && path.equals("/api/brief")) {
+                    handleBrief(registry, ex);
                 } else {
                     respond(ex, 404, JSON.createObjectNode().put("error", "not found"));
                 }
@@ -258,6 +265,46 @@ public final class Daemon {
         hso.put("permissionDecision", "deny");
         hso.put("permissionDecisionReason", decision.reason());
         respond(ex, 200, out);
+    }
+
+    /// Compose a briefing bundle for a session. Reads the transcript ONLY if
+    /// the session's project has a local consent file; otherwise the briefing
+    /// is registry-only and says so. Redaction happens inside the digest, on
+    /// ingest. Tailing a consented session marks it observed (no silent
+    /// observation).
+    private static void handleBrief(Registry registry, HttpExchange ex) throws Exception {
+        var sessionId = queryParam(ex, "session");
+        var self = sessionId == null ? Optional.<Registry.Session>empty() : registry.session(sessionId);
+        if (self.isEmpty()) {
+            respond(ex, 404, JSON.createObjectNode().put("error", "unknown session " + sessionId));
+            return;
+        }
+        var s = self.get();
+        long now = System.currentTimeMillis();
+
+        var projectRoot = s.worktree() != null ? Path.of(s.worktree()) : Path.of(s.projectDir());
+        boolean consented = Consent.isGranted(projectRoot);
+
+        TranscriptDigest.Digest digest = TranscriptDigest.Digest.empty();
+        if (consented && s.transcriptPath() != null) {
+            digest = TranscriptDigest.fromFile(Path.of(s.transcriptPath()));
+            registry.markObserved(sessionId);
+        }
+
+        var leaseLines = registry.activeLeases(s.projectDir()).stream()
+                .filter(l -> l.sessionId().equals(sessionId))
+                .map(l -> new BriefingComposer.LeaseLine(l.scopeString(), l.note()))
+                .toList();
+
+        var parent = new BriefingComposer.Parent(s.sessionId(), s.projectDir(), s.gitBranch(),
+                s.statedTask(), s.lastSeen(), consented);
+        var bundle = BriefingComposer.compose(parent, digest, leaseLines, consented, now);
+
+        respond(ex, 200, JSON.createObjectNode()
+                .put("session_id", sessionId)
+                .put("consented", consented)
+                .put("generated_at", now)
+                .put("briefing", bundle));
     }
 
     private static ObjectNode peersJson(Registry registry, String sessionId) throws Exception {

@@ -15,11 +15,26 @@
     <jackson.version>2.18.2</jackson.version>
   </properties>
 
+  <repositories>
+    <repository>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
+    </repository>
+  </repositories>
+
   <dependencies>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.version}</version>
+    </dependency>
+    <!-- agent-blackbox's redaction, reused as a library (Jackson-free). The
+         same patterns that scrub blackbox trace events scrub conductor's
+         session digests before they are stored or shown. -->
+    <dependency>
+      <groupId>com.github.hhagenbuch.agent-blackbox</groupId>
+      <artifactId>blackbox-redact</artifactId>
+      <version>v0.3.0</version>
     </dependency>
     <dependency>
       <groupId>org.xerial</groupId>

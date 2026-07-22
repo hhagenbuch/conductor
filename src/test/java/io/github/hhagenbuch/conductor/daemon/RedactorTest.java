@@ -28,6 +28,7 @@ class RedactorTest {
 
     private void assertRedacted(String secretBearing) {
         var out = Redactor.redact(secretBearing);
-        assertTrue(out.contains("[REDACTED]"), "expected redaction in: " + out);
+        assertTrue(out.contains("[redacted]"), "expected redaction in: " + out);
+        assertTrue(Redactor.wouldRedact(secretBearing));
     }
 }

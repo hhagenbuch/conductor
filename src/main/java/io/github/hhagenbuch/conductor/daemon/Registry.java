@@ -193,6 +193,16 @@ public final class Registry implements AutoCloseable {
         }
     }
 
+    /// Mark a session as being observed (its transcript has been tailed). Set
+    /// once the daemon builds a digest from a consented project's transcript,
+    /// so `ps` and `who_else` can show it ... no silent observation.
+    public synchronized void markObserved(String sessionId) throws SQLException {
+        try (var ps = conn.prepareStatement("UPDATE sessions SET observed = 1 WHERE session_id = ?")) {
+            ps.setString(1, sessionId);
+            ps.executeUpdate();
+        }
+    }
+
     public synchronized void heartbeat(String sessionId) throws SQLException {
         try (var ps = conn.prepareStatement("UPDATE sessions SET last_seen = ? WHERE session_id = ?")) {
             ps.setLong(1, clock.millis());

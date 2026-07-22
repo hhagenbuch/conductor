@@ -196,11 +196,33 @@ https://code.claude.com/docs/en/headless.md, plus live runs.
   assist spawner must therefore run helpers with explicit `--allowedTools`
   scoping, which is also the safer design.
 
-**[DOCS]** Also available (not exercised live): `--session-id <uuid>` to fix
-the session id in advance (assist can pre-register the helper before spawn),
-`--fork-session` to resume into a new id, `-c/--continue` for most recent
-session in cwd, `--input-format stream-json` for interactive-style headless
-drive, `--no-session-persistence`, `--bare`.
+**[LIVE]** verified on 2026-07-22, Claude Code v2.1.217 (promoted from DOCS for
+Phase 4, with the failure cases assist depends on):
+
+- **Happy path:** `claude -p --session-id <uuid>` creates the session under
+  exactly that id (the result JSON's `session_id` equals the uuid passed).
+- **Collision is a hard error, not a resume or fork:** invoking `--session-id`
+  with an id that already exists exits non-zero with
+  `Error: Session ID <uuid> is already in use.` A pre-assigned id is
+  single-use.
+- **A used id cannot be reclaimed:** deleting the transcript JSONL does **not**
+  free the id ... a later `--session-id` with it still errors "already in use"
+  (the id is tracked more durably than the transcript file). `--resume` of a
+  pre-assigned, already-completed id did not resume in this test either.
+
+**Design consequences for assist (Phase 4):** the spawner must mint a **fresh**
+uuid per helper and never reuse one; a spawn failure must be treated as
+terminal for that id (retry only with a new uuid). Because assist pre-registers
+the helper in conductor's registry *before* launching `claude`, any failure
+between register and a live process leaves a phantom holding leases ... so
+pre-registration must be paired with a guaranteed cleanup (release the
+phantom's leases, mark it ended) on every failure path. Both are built and
+tested in Phase 4.
+
+**[DOCS]** Also available (not exercised live): `--fork-session` to resume into
+a new id, `-c/--continue` for most recent session in cwd, `--input-format
+stream-json` for interactive-style headless drive, `--no-session-persistence`,
+`--bare`.
 
 ---
 

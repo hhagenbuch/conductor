@@ -1,5 +1,6 @@
 package io.github.hhagenbuch.conductor;
 
+import io.github.hhagenbuch.conductor.cli.AssistCommand;
 import io.github.hhagenbuch.conductor.cli.ObserveCommand;
 import io.github.hhagenbuch.conductor.cli.PsCommand;
 import io.github.hhagenbuch.conductor.daemon.Daemon;
@@ -29,6 +30,7 @@ public final class Main {
             case "remove" -> System.exit(new Installer(ConductorHome.resolve()).remove(projectArg(rest)));
             case "ps" -> System.exit(PsCommand.run(ConductorHome.resolve()));
             case "observe" -> System.exit(ObserveCommand.run(rest));
+            case "assist" -> System.exit(AssistCommand.run(ConductorHome.resolve(), rest));
             case "version", "--version", "-v" -> System.out.println("conductor " + VERSION);
             default -> {
                 usage();
@@ -52,6 +54,9 @@ public final class Main {
               ps                    show sessions known to the bus
               observe [project-dir] consent to redacted transcript observation for a project
                                     (local-only, gitignored; --revoke to withdraw)
+              assist <session-id>   spawn a helper session (own worktree + branch, briefed,
+                                    integrates via PR) to finish a job faster
+                                    (--task "..." --claim <scope> --allow Tool,Tool)
               daemon                run the bus daemon in the foreground
               mcp-shim              run the per-session stdio MCP shim (invoked by Claude Code)
               version               print version

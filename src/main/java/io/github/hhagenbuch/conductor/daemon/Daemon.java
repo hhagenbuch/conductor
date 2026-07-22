@@ -10,9 +10,7 @@ import io.github.hhagenbuch.conductor.ConductorHome;
 import io.github.hhagenbuch.conductor.Main;
 import io.github.hhagenbuch.conductor.lease.Enforcer;
 import io.github.hhagenbuch.conductor.lease.Lease;
-import io.github.hhagenbuch.conductor.transcript.BriefingComposer;
-import io.github.hhagenbuch.conductor.transcript.Consent;
-import io.github.hhagenbuch.conductor.transcript.TranscriptDigest;
+import io.github.hhagenbuch.conductor.transcript.Briefings;
 
 import java.nio.file.Path;
 
@@ -106,6 +104,8 @@ public final class Daemon {
                     handleEnforce(registry, ex);
                 } else if (method.equals("GET") && path.equals("/api/brief")) {
                     handleBrief(registry, ex);
+                } else if (method.equals("POST") && path.equals("/api/assist")) {
+                    handleAssist(registry, ex);
                 } else {
                     respond(ex, 404, JSON.createObjectNode().put("error", "not found"));
                 }
@@ -281,30 +281,53 @@ public final class Daemon {
         }
         var s = self.get();
         long now = System.currentTimeMillis();
-
-        var projectRoot = s.worktree() != null ? Path.of(s.worktree()) : Path.of(s.projectDir());
-        boolean consented = Consent.isGranted(projectRoot);
-
-        TranscriptDigest.Digest digest = TranscriptDigest.Digest.empty();
-        if (consented && s.transcriptPath() != null) {
-            digest = TranscriptDigest.fromFile(Path.of(s.transcriptPath()));
-            registry.markObserved(sessionId);
+        var result = Briefings.compose(registry, s, now);
+        if (result.tailed()) {
+            registry.markObserved(sessionId); // no silent observation
         }
-
-        var leaseLines = registry.activeLeases(s.projectDir()).stream()
-                .filter(l -> l.sessionId().equals(sessionId))
-                .map(l -> new BriefingComposer.LeaseLine(l.scopeString(), l.note()))
-                .toList();
-
-        var parent = new BriefingComposer.Parent(s.sessionId(), s.projectDir(), s.gitBranch(),
-                s.statedTask(), s.lastSeen(), consented);
-        var bundle = BriefingComposer.compose(parent, digest, leaseLines, consented, now);
-
         respond(ex, 200, JSON.createObjectNode()
                 .put("session_id", sessionId)
-                .put("consented", consented)
+                .put("consented", result.consented())
                 .put("generated_at", now)
-                .put("briefing", bundle));
+                .put("briefing", result.bundle()));
+    }
+
+    /// Spawn a helper for a parent session. The daemon owns the registry, so
+    /// pre-registration and cleanup happen here with direct (single-writer)
+    /// access ... no cross-process phantom race.
+    private static void handleAssist(Registry registry, HttpExchange ex) throws Exception {
+        JsonNode body = JSON.readTree(ex.getRequestBody());
+        var parent = text(body, "parent");
+        var task = text(body, "task");
+        var scopes = new java.util.ArrayList<String>();
+        body.path("scopes").forEach(n -> scopes.add(n.asText()));
+        var allowed = new java.util.ArrayList<String>();
+        body.path("allowedTools").forEach(n -> allowed.add(n.asText()));
+        if (allowed.isEmpty()) {
+            allowed.addAll(List.of("Read", "Edit", "Write", "Bash", "Grep", "Glob"));
+        }
+
+        var launcher = new io.github.hhagenbuch.conductor.assist.ClaudeLauncher(
+                io.github.hhagenbuch.conductor.assist.ClaudeLauncher.selfJar(),
+                text(body, "model") != null ? text(body, "model") : "sonnet");
+        var spawner = new io.github.hhagenbuch.conductor.assist.AssistSpawner(
+                registry, io.github.hhagenbuch.conductor.assist.Worktrees.Factory.real(),
+                launcher, () -> java.util.UUID.randomUUID().toString());
+        try {
+            var result = spawner.assist(parent, task, scopes, allowed);
+            respond(ex, 200, JSON.createObjectNode()
+                    .put("ok", true)
+                    .put("helper_id", result.helperId())
+                    .put("branch", result.branch())
+                    .put("worktree", result.worktree().toString())
+                    .put("briefing", result.briefingFile().toString())
+                    .put("pid", result.pid()));
+        } catch (IllegalArgumentException bad) {
+            respond(ex, 400, JSON.createObjectNode().put("ok", false).put("error", bad.getMessage()));
+        } catch (Exception e) {
+            respond(ex, 500, JSON.createObjectNode().put("ok", false)
+                    .put("error", "assist failed (helper cleaned up): " + e.getMessage()));
+        }
     }
 
     private static ObjectNode peersJson(Registry registry, String sessionId) throws Exception {

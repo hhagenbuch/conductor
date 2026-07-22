@@ -170,13 +170,63 @@ sharing raw conversation. Each bundle is stamped with when it was generated and
 how fresh the parent was, and it tells the reader to re-brief before any
 decision that depends on the parent's current state: a briefing is a snapshot.
 
+## Spawning a helper (`assist`)
+
+![conductor assist hands a lease-disjoint slice to a briefed helper that works in its own worktree and integrates via PR](docs/assist.gif)
+
+<details>
+<summary>Transcript of the recording</summary>
+
+```console
+$ conductor ps    # one session, holding src/main while it writes the retry logic
+SESSION    STATUS   PROJECT     BRANCH   SEEN
+a3f2c118   active   …/widget    main     2s ago
+LEASE  #1  path:src/main/**   a3f2c118   in 59m
+
+$ conductor assist a3f2c118 --task 'take the test suite' --claim path:src/test/** --allow Write,Bash
+conductor: spawned helper 3b4149b3
+  branch:   feature/assist-3b4149b3
+  worktree: …/widget-assist-3b4149b3
+  briefing: …/widget-assist-3b4149b3/.conductor-briefing.md
+
+$ conductor ps    # the helper is a child on its own branch, holding its own scope
+a3f2c118   active   …/widget   main                      11s ago
+3b4149b3   active   …/widget   feature/assist-3b4149b3    5s ago  child
+LEASE  #1 path:src/main/**  a3f2c118      #2 path:src/test/**  3b4149b3
+
+Parent's inbox:
+  • helper 3b4149b3 has taken: write the retry test suite (branch feature/assist-3b4149b3)…
+  • on it — read the briefing, taking the test suite in my worktree
+  • done: test suite committed on my branch; opening a PR (stayed in path:src/test/**, no conflict with your src/main work)
+
+Helper committed on its OWN branch (PR-ready); the parent tree is untouched.
+```
+
+</details>
+
+`conductor assist <parent-session-id> --task "…" --claim <scope>… --allow Tool,Tool`
+mints a **fresh** session id (a used `--session-id` can never be reclaimed —
+[GROUND-TRUTH.md](docs/GROUND-TRUTH.md) §3), creates a git worktree on a new
+`feature/` branch, pre-registers the helper and its leases, writes it a briefing
+bundle, and launches a headless `claude -p` scoped with `--allowedTools`. The
+helper works only in its worktree and integrates via PR — it never edits the
+parent's tree, which retires the stale-local-main incident class structurally.
+Every failure path releases the helper's leases and removes the worktree, so a
+spawn that dies mid-launch leaves no phantom holding scopes.
+
+> The recording drives the real daemon, registry, leases, worktree, briefing,
+> and inbox; only the helper's leaf process is scripted (in place of a real
+> `claude -p`) so it reproduces offline. It makes **no timing claim** — the
+> finish-faster measurement is done honestly in `docs/CASE-STUDY.md` from a real
+> coordinated week (Phase 5).
+
 ## Roadmap
 
 - [x] **Phase 0** — ground truth + design ([GROUND-TRUTH.md](docs/GROUND-TRUTH.md), [DESIGN.md](docs/DESIGN.md))
 - [x] **Phase 1** — bus + registry + hooks: `who_else` / `post` / `inbox`, `conductor init` / `ps`, two sessions mutually visible
 - [x] **Phase 2** — leases + fail-open enforcement: `claim` / `release` / `leases`, PreToolUse block on Write/Edit and history-moving git (the war-story GIF)
 - [x] **Phase 3** — transcript awareness + briefing: consent flow (`conductor observe`), redacted digests, `brief_me`
-- [ ] **Phase 4** — `assist`: worktree + headless helper spawn with a briefing bundle, PR-based integration (the finish-faster GIF)
+- [x] **Phase 4** — `assist`: worktree + headless helper spawn with a briefing bundle, PR-based integration
 - [ ] **Phase 5** — dogfood + case study from a real coordinated week
 
 ## Contract

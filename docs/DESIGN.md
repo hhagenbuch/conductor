@@ -18,10 +18,25 @@ uncoordinated sessions, one project":
 2. **The launch-docs publication.** A session merged work that published
    draft documents another session was still writing.
 
-Neither session knew the other existed. Both incidents are prevented by the
-two cheapest features in this design: a registry (know who else is working
-here) and leases (block the conflicting write with a message that names the
-holder).
+Neither session knew the other existed. Being precise about what prevents
+what: **file-edit conflicts** are prevented by leases (the PreToolUse deny
+path on Write|Edit). But both incidents above were **git-level operations
+executed through Bash** ... a branch cut from stale local main and a squash
+merge ... and those sail past a Write|Edit matcher. They are covered two ways:
+
+- **Structurally**, for spawned helpers: `assist` puts every helper in its
+  own worktree and integrates via PR. A helper cannot repeat the incidents
+  because it never touches the parent's tree or merges anything itself.
+- **Best-effort**, for any session: lease enforcement also matches Bash and
+  classifies git commands (push, merge, rebase, checkout/switch with `-b`/
+  `-c`, reset) against `branch:` and `repo:` scopes. This is imperfect by
+  nature (see § Leases) and is claimed as a tripwire, not a guarantee.
+
+Two independently-started sessions on one checkout are therefore protected
+firmly for file edits, best-effort for git operations, and by convention
+(worktree discipline, registry awareness) beyond that. The registry is what
+makes the convention followable: you cannot coordinate with a session you
+cannot see.
 
 ## Architecture
 
@@ -64,6 +79,12 @@ We choose the **stdio shim** anyway, for three reasons:
    daemon (port file under `~/.conductor/`), so the user-scope MCP
    registration never encodes a port.
 
+Lazy start has a named race: several sessions starting at once must not each
+launch a daemon. The daemon takes an exclusive file lock under
+`~/.conductor/` before binding and writes the port file last; a shim that
+loses the start race waits briefly and reads the winner's port file. Exactly
+one daemon per machine, enforced by the lock, not by hope.
+
 Cost: one small shim process per session (the platform already spawns
 per-session processes for every stdio server; this adds nothing new). Direct
 HTTP registration stays documented as an alternative for setups where the
@@ -98,10 +119,17 @@ redacted ... a consent-free digest the platform hands us for nothing).
 
 Lifecycle: SessionStart hook registers; UserPromptSubmit and PostToolUse
 heartbeat (fire-and-forget, sub-second timeout); Stop updates
-`last_activity`; SessionEnd deregisters. A session past its heartbeat TTL
-shows as `stale`, never silently vanishes ... `conductor ps` prints it with
-its age, because a stale entry is information ("something was here and may
-still hold leases").
+`last_activity`; SessionEnd deregisters **and releases the session's
+leases** (TTL expiry covers crashes and kills, where SessionEnd never
+fires). A session past its heartbeat TTL shows as `stale`, never silently
+vanishes ... `conductor ps` prints it with its age, because a stale entry is
+information ("something was here and may still hold leases").
+
+Heartbeat cost is bounded inside the hook: PostToolUse fires on every tool
+call in every session, so the hook script keeps a per-session marker file
+and skips the HTTP call when the last beat is younger than ~30 seconds. The
+steady-state overhead is one curl per session per half minute, not one per
+tool call.
 
 ### Bus tools (MCP, via shim)
 
@@ -117,18 +145,40 @@ No waiting, no queueing in v1: a conflict fails loud and the parties
 negotiate over the bus. Deadlock policy is therefore trivial: there is
 nothing to deadlock on.
 
-Enforcement is a PreToolUse hook on `Write|Edit`: resolve the target path
-against active leases; on conflict, emit `permissionDecision: "deny"` with a
-reason that names the holder, its task, the lease expiry, and the way out
-("`post` session a3f2 or `claim` disjoint work"). The entire deny path is
-LIVE-proven (GROUND-TRUTH § 1.4): the model receives the reason verbatim and
-the denial is recorded in `permission_denials`.
+Enforcement is a PreToolUse hook with two matchers:
+
+- **`Write|Edit`** (firm): resolve the target path against active `path:` and
+  `repo:` leases; on conflict, emit `permissionDecision: "deny"` with a
+  reason that names the holder, its task, the lease expiry, and the way out
+  ("`post` session a3f2 or `claim` disjoint work"). The entire deny path is
+  LIVE-proven (GROUND-TRUTH § 1.4): the model receives the reason verbatim
+  and the denial is recorded in `permission_denials`.
+- **`Bash`** (best-effort): a small classifier over the command string flags
+  git operations that move branches or history ... `git push`, `git merge`,
+  `git rebase`, `git checkout -b` / `git switch -c`, `git reset` ... and
+  checks them against `branch:` and `repo:` scopes. This covers the actual
+  incident class (both war stories were git commands), and it is **honestly
+  imperfect**: `sed -i`, scripts that shell out to git, aliases, and
+  compound commands can evade it. DESIGN claims it as a tripwire that
+  catches the common spellings, not a security boundary. The classifier is
+  pure string analysis with a fail-open default: anything it cannot parse
+  passes.
+
+Path matching canonicalizes before comparison (absolute paths, symlinks
+resolved), and **repo identity comes from the git common dir, not the cwd**:
+two worktrees of one repository have different paths but must resolve to the
+same `repo:` scope, and `git rev-parse --git-common-dir` is what actually
+identifies the repository.
 
 ### Transcript awareness (consent-gated)
 
-Opt-in per project: `conductor observe <project>` writes a consent file
-(`.conductor-consent`, committed or local, the README explains the choice);
-without it the tailer never opens that project's transcripts. The daemon
+Opt-in per project, **per user, per machine**: `conductor observe <project>`
+writes a consent file (`.conductor-consent`) and adds it to the project's
+`.git/info/exclude` itself, so it can never be committed. Consent is not a
+project property: the transcripts being tailed are one user's local files,
+and a committed consent file would opt in every future contributor's local
+transcripts without their knowledge. There is no committed variant. Without
+the local file, the tailer never opens that project's transcripts. The daemon
 tails registered sessions' JSONL (path taken from hook payloads, never
 guessed), keeps a rolling digest per session (current task, files touched,
 last tool calls, timestamps), and runs blackbox's redaction patterns **on
@@ -187,9 +237,11 @@ leases, which are checked at enforcement time against SQLite directly.
 
 Transcripts contain everything the user typed. Rules, in force from Phase 3:
 
-- **Consent per project**, via an explicit file conductor writes only when
-  asked. No consent, no tailing ... sessions in unconsented projects are
-  registry-only.
+- **Consent per project, per user, per machine**, via an explicit local-only
+  file conductor writes only when asked and gitignores itself
+  (`.git/info/exclude`). Never committable ... consent to tail local
+  transcripts cannot be granted on another user's behalf. No consent, no
+  tailing ... sessions in unconsented projects are registry-only.
 - **Redaction on ingest** (blackbox patterns), before storage or display.
 - **Observed-by markers**: `conductor ps` and `who_else` show which sessions
   are being tailed. No silent observation.
@@ -246,8 +298,10 @@ message, not a bad merge.
    fail-open-on-daemon-death test. Demo #1: the war-story GIF.
 3. **Transcript awareness + briefing.** Consent flow, tailer, redacted
    digests, brief_me. Synthetic fixtures + CI privacy guard.
-4. **Assist.** Worktree, pre-registered spawn, inbox wiring, PR integration.
-   Demo #2: the finish-faster GIF.
+4. **Assist.** Opens by promoting `--session-id` from DOCS to LIVE with a
+   five-minute experiment (pre-registration depends on it; verify before
+   building on it, not mid-phase). Then worktree, pre-registered spawn,
+   inbox wiring, PR integration. Demo #2: the finish-faster GIF.
 5. **Dogfood + case study.** Two real RFC weeks run as conductor-coordinated
    sessions; CASE-STUDY.md from real bus logs; playbook chapter.
 

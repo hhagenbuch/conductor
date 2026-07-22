@@ -72,6 +72,80 @@
           }
         }
       ]
+    },
+    {
+      "tool": "claim",
+      "description": "Claim an advisory lease on a scope before you start editing it, so other sessions are blocked from conflicting writes. Scope is repo:, path:<glob>, or branch:<name>.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scope": { "type": "string", "description": "repo:, path:<glob> (e.g. path:src/main/**), or branch:<name>." },
+          "note": { "type": "string", "description": "Optional short note on what you are doing (shown to blocked sessions)." },
+          "ttlMinutes": { "type": "number", "description": "Optional lease lifetime in minutes (default 60)." }
+        },
+        "required": ["scope"]
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "claim accepts a scope and returns a text result",
+          "input": { "scope": "path:src/main/**", "note": "recording a pact" },
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "release",
+      "description": "Release a lease you hold, by its id, when you are done with that scope.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "number", "description": "The lease id to release (see `leases`)." }
+        },
+        "required": ["id"]
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "release accepts a lease id and returns a text result",
+          "input": { "id": 1 },
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "tool": "leases",
+      "description": "List the advisory leases currently held on this project and who holds them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "leases returns a text content block and a boolean isError",
+          "input": {},
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

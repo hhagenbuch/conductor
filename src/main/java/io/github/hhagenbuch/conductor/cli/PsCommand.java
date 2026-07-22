@@ -50,7 +50,30 @@ public final class PsCommand {
                 System.out.println("    last: " + act.asText());
             }
         }
+        printLeases(client, port.get());
         return 0;
+    }
+
+    private static void printLeases(DaemonClient client, int port) throws Exception {
+        var body = client.get(port, "/api/leases").orElse("{}");
+        var leases = JSON.readTree(body).path("leases");
+        if (leases.isEmpty()) {
+            return;
+        }
+        System.out.println();
+        System.out.printf("%-6s %-28s %-10s %s%n", "LEASE", "SCOPE", "HOLDER", "EXPIRES");
+        for (var l : leases) {
+            System.out.printf("#%-5d %-28s %-10s in %s%n",
+                    l.path("id").asLong(),
+                    l.path("scope").asText(),
+                    shortId(l.path("session_id").asText()),
+                    minsUntil(l.path("expires_at").asLong()));
+        }
+    }
+
+    private static String minsUntil(long epochMillis) {
+        long m = Math.max(0, (epochMillis - System.currentTimeMillis()) / 60_000);
+        return m + "m";
     }
 
     private static String shortId(String id) {

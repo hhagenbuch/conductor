@@ -19,15 +19,27 @@ shape: **two uncoordinated sessions, one project.**
    documents another session was still writing.
 
 Neither session knew the other existed. The first thing conductor gives you is
-that they now do.
+that they now do ... and the second is that it stops the collision before it
+happens:
+
+![Two sessions in one repo; the second is blocked from editing a file the first has leased, with a message naming the holder and the way out](demo/war-story.gif)
+
+The recording is scripted, not hand-captured:
+[`demo/war-story.tape`](demo/war-story.tape) drives
+[`demo/war-story.sh`](demo/war-story.sh) with
+[vhs](https://github.com/charmbracelet/vhs) against the real conductor daemon
+and the real PreToolUse enforcement hook, so `vhs demo/war-story.tape`
+reproduces it from a clean clone. No network, no API key.
 
 ## Status
 
-**Phase 1 (bus + registry + hooks) is shipped.** A machine-local daemon owns a
-SQLite registry behind a localhost HTTP API; a per-session stdio MCP shim gives
-each session the bus tools; session hooks (installed by `conductor init`)
-auto-register and heartbeat. Leases and enforcement (Phase 2), transcript
-briefing (Phase 3), and `assist` (Phase 4) are next ... see
+**Phases 1-2 are shipped.** Phase 1: a machine-local daemon owns a SQLite
+registry behind a localhost HTTP API; a per-session stdio MCP shim gives each
+session the bus tools; session hooks (installed by `conductor init`)
+auto-register and heartbeat. Phase 2: advisory **leases** with a PreToolUse
+enforcement hook that blocks a conflicting Write, Edit, or history-moving git
+command with a message naming the holder ... and fails open if the bus is down.
+Transcript briefing (Phase 3) and `assist` (Phase 4) are next ... see
 [docs/DESIGN.md](docs/DESIGN.md).
 
 The design and the ground-truth verification it rests on came first:
@@ -61,6 +73,12 @@ Inside any Claude Code session in a project where you ran `conductor init`:
   what they last did.
 - **`post` / `inbox`** ... session-to-session mail, addressed by session id or an
   unambiguous prefix.
+- **`claim` / `release` / `leases`** ... take an advisory lease on a scope
+  (`repo:`, `path:<glob>`, `branch:<name>`) before you edit it. A second session
+  that tries a conflicting Write, Edit, or history-moving git command is blocked
+  by the PreToolUse hook with a message naming you and the way out. Leases carry
+  a TTL, release explicitly or on session end, and are **unenforced (fail open)
+  if the daemon is down** ... a dead coordinator never stops work.
 
 From the shell:
 

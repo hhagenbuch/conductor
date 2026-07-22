@@ -111,4 +111,47 @@ class RegistryTest {
             assertEquals("ended", reg.sessions("/repo/a").getFirst().status());
         }
     }
+
+    @Test
+    void claimReleaseAndOwnershipCheck(@TempDir Path dir) throws Exception {
+        var clock = new TestClock();
+        try (var reg = open(dir, clock)) {
+            reg.register("s1", "/repo/a", "main", "/repo/a", null, false);
+            var lease = reg.claim("s1", "/repo/a",
+                    io.github.hhagenbuch.conductor.lease.Lease.Kind.PATH, "src/**", 60_000, "work");
+            assertEquals(1, reg.activeLeases("/repo/a").size());
+            // A different session cannot release it.
+            assertFalse(reg.release("other", lease.id()));
+            assertEquals(1, reg.activeLeases("/repo/a").size());
+            // The owner can.
+            assertTrue(reg.release("s1", lease.id()));
+            assertTrue(reg.activeLeases("/repo/a").isEmpty());
+        }
+    }
+
+    @Test
+    void expiredLeasesArePrunedOnRead(@TempDir Path dir) throws Exception {
+        var clock = new TestClock();
+        try (var reg = open(dir, clock)) {
+            reg.register("s1", "/repo/a", "main", "/repo/a", null, false);
+            reg.claim("s1", "/repo/a",
+                    io.github.hhagenbuch.conductor.lease.Lease.Kind.REPO, "", 1_000, null);
+            assertEquals(1, reg.activeLeases("/repo/a").size());
+            clock.advance(Duration.ofMillis(1_001));
+            assertTrue(reg.activeLeases("/repo/a").isEmpty(), "expired lease pruned on read (crash recovery)");
+        }
+    }
+
+    @Test
+    void endReleasesTheSessionsLeases(@TempDir Path dir) throws Exception {
+        var clock = new TestClock();
+        try (var reg = open(dir, clock)) {
+            reg.register("s1", "/repo/a", "main", "/repo/a", null, false);
+            reg.claim("s1", "/repo/a",
+                    io.github.hhagenbuch.conductor.lease.Lease.Kind.REPO, "", 600_000, null);
+            reg.end("s1");
+            assertTrue(reg.activeLeases("/repo/a").isEmpty(),
+                    "a cleanly-ended session leaves no orphaned leases");
+        }
+    }
 }

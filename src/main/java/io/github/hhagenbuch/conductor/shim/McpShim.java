@@ -89,6 +89,15 @@ public final class McpShim {
         tools.add(tool("inbox",
                 "Read messages other sessions have sent you. Check it at natural boundaries: task start, before commits or PRs, and when you are blocked.",
                 schema(false)));
+        tools.add(tool("claim",
+                "Claim an advisory lease on a scope before you start editing it, so other sessions are blocked from conflicting writes. Scope is repo:, path:<glob>, or branch:<name>.",
+                claimSchema()));
+        tools.add(tool("release",
+                "Release a lease you hold, by its id, when you are done with that scope.",
+                releaseSchema()));
+        tools.add(tool("leases",
+                "List the advisory leases currently held on this project and who holds them.",
+                schema(false)));
         var r = JSON.createObjectNode();
         r.set("tools", tools);
         return r;
@@ -110,6 +119,9 @@ public final class McpShim {
                 case "who_else" -> whoElse(port);
                 case "post" -> post(port, args);
                 case "inbox" -> inbox(port);
+                case "claim" -> claim(port, args);
+                case "release" -> release(port, args);
+                case "leases" -> leases(port);
                 default -> textResult("conductor: unknown tool " + name, true);
             };
         } catch (Exception e) {
@@ -184,6 +196,66 @@ public final class McpShim {
         return textResult(sb.toString(), false);
     }
 
+    private ObjectNode claim(int port, JsonNode args) throws Exception {
+        var scope = args.path("scope").asText("");
+        if (scope.isBlank()) {
+            return textResult("claim needs a 'scope': repo:, path:<glob>, or branch:<name>.", true);
+        }
+        var payload = JSON.createObjectNode().put("session", sessionId).put("scope", scope);
+        if (!args.path("note").asText("").isBlank()) {
+            payload.put("note", args.path("note").asText());
+        }
+        if (args.has("ttlMinutes")) {
+            payload.put("ttlMs", args.path("ttlMinutes").asLong() * 60_000);
+        }
+        var resp = client.postJson(port, "/api/lease/claim", payload.toString());
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; lease not claimed.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        if (root.path("ok").asBoolean(false)) {
+            return textResult("Claimed " + root.path("scope").asText() + " (lease #"
+                    + root.path("id").asLong() + "). Release it with `release` when done.", false);
+        }
+        return textResult(root.path("error").asText("could not claim lease"), true);
+    }
+
+    private ObjectNode release(int port, JsonNode args) throws Exception {
+        if (!args.has("id")) {
+            return textResult("release needs the lease 'id' (see `leases`).", true);
+        }
+        var payload = JSON.createObjectNode().put("session", sessionId).put("id", args.path("id").asLong());
+        var resp = client.postJson(port, "/api/lease/release", payload.toString());
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; lease not released.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        return root.path("ok").asBoolean(false)
+                ? textResult("Released lease #" + args.path("id").asLong() + ".", false)
+                : textResult(root.path("error").asText("could not release lease"), true);
+    }
+
+    private ObjectNode leases(int port) throws Exception {
+        var resp = client.get(port, "/api/leases?session=" + enc(sessionId));
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; cannot list leases.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        var arr = root.path("leases");
+        if (arr.isEmpty()) {
+            return textResult("No leases held on this project.", false);
+        }
+        var sb = new StringBuilder(arr.size() + " lease(s) on this project:\n");
+        for (var l : arr) {
+            sb.append("• #").append(l.path("id").asLong()).append("  ")
+              .append(l.path("scope").asText())
+              .append("  held by ").append(shortId(l.path("session_id").asText()))
+              .append(l.path("session_id").asText().equals(sessionId) ? " (you)" : "")
+              .append("  expires in ").append(minsUntil(l.path("expires_at").asLong())).append('\n');
+        }
+        return textResult(sb.toString(), false);
+    }
+
     // ---- MCP encoding helpers ----
 
     private ObjectNode tool(String name, String description, ObjectNode inputSchema) {
@@ -198,6 +270,29 @@ public final class McpShim {
         var s = JSON.createObjectNode();
         s.put("type", "object");
         s.putObject("properties");
+        return s;
+    }
+
+    private ObjectNode claimSchema() {
+        var s = JSON.createObjectNode();
+        s.put("type", "object");
+        var props = s.putObject("properties");
+        props.putObject("scope").put("type", "string")
+                .put("description", "repo:, path:<glob> (e.g. path:src/main/**), or branch:<name>.");
+        props.putObject("note").put("type", "string")
+                .put("description", "Optional short note on what you are doing (shown to blocked sessions).");
+        props.putObject("ttlMinutes").put("type", "number")
+                .put("description", "Optional lease lifetime in minutes (default 60).");
+        s.putArray("required").add("scope");
+        return s;
+    }
+
+    private ObjectNode releaseSchema() {
+        var s = JSON.createObjectNode();
+        s.put("type", "object");
+        s.putObject("properties").putObject("id").put("type", "number")
+                .put("description", "The lease id to release (see `leases`).");
+        s.putArray("required").add("id");
         return s;
     }
 
@@ -247,6 +342,11 @@ public final class McpShim {
 
     private static String shortId(String id) {
         return id == null ? "?" : id.length() <= 8 ? id : id.substring(0, 8);
+    }
+
+    private static String minsUntil(long epochMillis) {
+        long m = Math.max(0, (epochMillis - System.currentTimeMillis()) / 60_000);
+        return m + "m";
     }
 
     private static String ageOf(long epochMillis) {

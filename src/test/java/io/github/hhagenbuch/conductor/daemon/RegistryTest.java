@@ -98,7 +98,7 @@ class RegistryTest {
             reg.recordActivity("s1", "committed with token sk-ant-SECRETKEY0123456789ABCDEF in the log");
             var act = reg.sessions("/repo/a").getFirst().lastActivity();
             assertFalse(act.contains("SECRETKEY0123456789"), "secret must be redacted before storage");
-            assertTrue(act.contains("[REDACTED]"));
+            assertTrue(act.contains("[redacted]"));
         }
     }
 

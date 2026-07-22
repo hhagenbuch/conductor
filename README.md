@@ -134,9 +134,9 @@ $ claude mcp add-json --scope user conductor \
 ```
 
 Then, inside any session in that project, the bus tools are available:
-`who_else`, `post` / `inbox`, and `claim` / `release` / `leases`. Add this to
-the project's `CLAUDE.md` so sessions check in at the natural boundaries
-(conductor ships polling-first — no magic context injection):
+`who_else`, `post` / `inbox`, `claim` / `release` / `leases`, and `brief_me`.
+Add this to the project's `CLAUDE.md` so sessions check in at the natural
+boundaries (conductor ships polling-first — no magic context injection):
 
 ```markdown
 ## Coordinating with other sessions (conductor)
@@ -145,12 +145,37 @@ the project's `CLAUDE.md` so sessions check in at the natural boundaries
   holds it, coordinate over `post`.
 ```
 
+### Awareness and briefings (opt-in)
+
+`who_else` and `ps` report each session's stated task and, if you opt in, a
+redacted digest of what it is actually doing. Observation is **consent-gated,
+per project, per user, per machine**:
+
+```console
+$ java -jar target/conductor.jar observe        # consent for THIS project (local-only, git-ignored)
+```
+
+`observe` writes a `.conductor-consent` file and adds it to the repo's
+`.git/info/exclude` itself, so it can never be committed onto another
+contributor — consent to read your local transcripts is yours alone to give
+(`--revoke` withdraws it). With consent, the daemon tails the registered
+sessions' transcripts, **redacting on ingest** with the
+[agent-blackbox](https://github.com/hhagenbuch/agent-blackbox) redaction
+library, and marks those sessions `observed` in `ps`/`who_else`. Without it,
+sessions are registry-only.
+
+`brief_me` distills a session's registry entry, its redacted digest, and its
+leases into a **briefing bundle** — the context a joining helper needs without
+sharing raw conversation. Each bundle is stamped with when it was generated and
+how fresh the parent was, and it tells the reader to re-brief before any
+decision that depends on the parent's current state: a briefing is a snapshot.
+
 ## Roadmap
 
 - [x] **Phase 0** — ground truth + design ([GROUND-TRUTH.md](docs/GROUND-TRUTH.md), [DESIGN.md](docs/DESIGN.md))
 - [x] **Phase 1** — bus + registry + hooks: `who_else` / `post` / `inbox`, `conductor init` / `ps`, two sessions mutually visible
 - [x] **Phase 2** — leases + fail-open enforcement: `claim` / `release` / `leases`, PreToolUse block on Write/Edit and history-moving git (the war-story GIF)
-- [ ] **Phase 3** — transcript awareness + briefing: consent flow (`conductor observe`), redacted digests, `brief_me`
+- [x] **Phase 3** — transcript awareness + briefing: consent flow (`conductor observe`), redacted digests, `brief_me`
 - [ ] **Phase 4** — `assist`: worktree + headless helper spawn with a briefing bundle, PR-based integration (the finish-faster GIF)
 - [ ] **Phase 5** — dogfood + case study from a real coordinated week
 

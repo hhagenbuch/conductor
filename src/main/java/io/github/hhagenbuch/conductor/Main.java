@@ -1,5 +1,6 @@
 package io.github.hhagenbuch.conductor;
 
+import io.github.hhagenbuch.conductor.cli.ObserveCommand;
 import io.github.hhagenbuch.conductor.cli.PsCommand;
 import io.github.hhagenbuch.conductor.daemon.Daemon;
 import io.github.hhagenbuch.conductor.install.Installer;
@@ -27,6 +28,7 @@ public final class Main {
             case "init" -> System.exit(new Installer(ConductorHome.resolve()).init(projectArg(rest)));
             case "remove" -> System.exit(new Installer(ConductorHome.resolve()).remove(projectArg(rest)));
             case "ps" -> System.exit(PsCommand.run(ConductorHome.resolve()));
+            case "observe" -> System.exit(ObserveCommand.run(rest));
             case "version", "--version", "-v" -> System.out.println("conductor " + VERSION);
             default -> {
                 usage();
@@ -48,6 +50,8 @@ public final class Main {
               init [project-dir]    install conductor hooks into a project (per-user, never committed)
               remove [project-dir]  uninstall conductor hooks from a project
               ps                    show sessions known to the bus
+              observe [project-dir] consent to redacted transcript observation for a project
+                                    (local-only, gitignored; --revoke to withdraw)
               daemon                run the bus daemon in the foreground
               mcp-shim              run the per-session stdio MCP shim (invoked by Claude Code)
               version               print version

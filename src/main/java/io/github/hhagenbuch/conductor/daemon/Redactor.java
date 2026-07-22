@@ -1,34 +1,30 @@
 package io.github.hhagenbuch.conductor.daemon;
 
-import java.util.List;
-import java.util.regex.Pattern;
+import io.github.hhagenbuch.blackbox.redact.Scrubber;
 
-/// Minimal credential-shape redaction applied to every activity digest
-/// before it is stored or shown. Phase 3 replaces this with the
-/// agent-blackbox redaction library as a dependency; the invariant is the
-/// same from day one: nothing unredacted is ever persisted by conductor.
+/// Redaction for everything conductor stores or shows about a session
+/// (activity digests, transcript-derived digests). This is a thin delegate to
+/// agent-blackbox's `blackbox-redact` library ... the same patterns that scrub
+/// blackbox trace events, reused here on plain strings. Nothing unredacted is
+/// ever persisted by conductor.
+///
+/// The credentials pattern set is used (not the narrow default) because the
+/// text scrubbed here is free-form assistant output and user prompts, where
+/// provider tokens, cloud keys, JWTs, and `key = value` secrets all appear.
 public final class Redactor {
 
-    private static final List<Pattern> PATTERNS = List.of(
-            Pattern.compile("sk-ant-[A-Za-z0-9_-]{10,}"),
-            Pattern.compile("sk-[A-Za-z0-9]{20,}"),
-            Pattern.compile("gh[pousr]_[A-Za-z0-9]{20,}"),
-            Pattern.compile("AKIA[A-Z0-9]{16}"),
-            Pattern.compile("xox[bap]-[A-Za-z0-9-]{10,}"),
-            Pattern.compile("eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"),
-            Pattern.compile("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
-            Pattern.compile("(?i)(password|passwd|secret|token|api[_-]?key)\\s*[=:]\\s*\\S+"));
+    private static final Scrubber SCRUBBER = Scrubber.forCredentials();
 
     public static String redact(String s) {
-        if (s == null) {
-            return null;
-        }
-        var out = s;
-        for (var p : PATTERNS) {
-            out = p.matcher(out).replaceAll("[REDACTED]");
-        }
-        return out;
+        return SCRUBBER.apply(s);
     }
 
-    private Redactor() { }
+    /// Whether scrubbing `s` would remove anything (used by the CI privacy
+    /// guard to prove a seeded secret does not survive).
+    public static boolean wouldRedact(String s) {
+        return SCRUBBER.scrub(s).redacted();
+    }
+
+    private Redactor() {
+    }
 }

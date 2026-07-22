@@ -146,6 +146,30 @@
           }
         }
       ]
+    },
+    {
+      "tool": "brief_me",
+      "description": "Get a briefing bundle for a session (yours or another's): its task, redacted progress digest, files touched, and leases held. Call it when you join a project or before decisions that depend on another session's state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session": { "type": "string", "description": "Session id (or prefix) to brief on. Omit to brief on yourself." }
+        }
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "brief_me returns a text content block and a boolean isError",
+          "input": {},
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

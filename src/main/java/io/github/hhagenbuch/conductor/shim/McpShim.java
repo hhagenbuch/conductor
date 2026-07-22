@@ -98,6 +98,9 @@ public final class McpShim {
         tools.add(tool("leases",
                 "List the advisory leases currently held on this project and who holds them.",
                 schema(false)));
+        tools.add(tool("brief_me",
+                "Get a briefing bundle for a session (yours or another's): its task, redacted progress digest, files touched, and leases held. Call it when you join a project or before decisions that depend on another session's state.",
+                briefSchema()));
         var r = JSON.createObjectNode();
         r.set("tools", tools);
         return r;
@@ -122,6 +125,7 @@ public final class McpShim {
                 case "claim" -> claim(port, args);
                 case "release" -> release(port, args);
                 case "leases" -> leases(port);
+                case "brief_me" -> briefMe(port, args);
                 default -> textResult("conductor: unknown tool " + name, true);
             };
         } catch (Exception e) {
@@ -140,6 +144,7 @@ public final class McpShim {
             others++;
             sb.append("• ").append(shortId(s.path("session_id").asText()))
               .append("  [").append(s.path("status").asText()).append("]")
+              .append(s.path("observed").asBoolean(false) ? " [observed]" : "")
               .append("  branch ").append(s.path("git_branch").asText("?"))
               .append("  seen ").append(ageOf(s.path("last_seen").asLong())).append(" ago");
             var task = s.path("stated_task");
@@ -256,6 +261,23 @@ public final class McpShim {
         return textResult(sb.toString(), false);
     }
 
+    private ObjectNode briefMe(int port, JsonNode args) throws Exception {
+        // Default to briefing myself when no session is given.
+        var target = args.path("session").asText("");
+        if (target.isBlank()) {
+            target = sessionId;
+        }
+        var resp = client.get(port, "/api/brief?session=" + enc(target));
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; cannot brief.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        if (root.has("error")) {
+            return textResult(root.path("error").asText(), true);
+        }
+        return textResult(root.path("briefing").asText(), false);
+    }
+
     // ---- MCP encoding helpers ----
 
     private ObjectNode tool(String name, String description, ObjectNode inputSchema) {
@@ -284,6 +306,14 @@ public final class McpShim {
         props.putObject("ttlMinutes").put("type", "number")
                 .put("description", "Optional lease lifetime in minutes (default 60).");
         s.putArray("required").add("scope");
+        return s;
+    }
+
+    private ObjectNode briefSchema() {
+        var s = JSON.createObjectNode();
+        s.put("type", "object");
+        s.putObject("properties").putObject("session").put("type", "string")
+                .put("description", "Session id (or prefix) to brief on. Omit to brief on yourself.");
         return s;
     }
 

@@ -28,8 +28,9 @@ public record ConductorHome(Path dir) {
         return new ConductorHome(dir.toAbsolutePath().normalize());
     }
 
-    public Path db()       { return dir.resolve("conductor.db"); }
-    public Path lockFile() { return dir.resolve("daemon.lock"); }
-    public Path portFile() { return dir.resolve("daemon.port"); }
-    public Path logFile()  { return dir.resolve("daemon.log"); }
+    public Path db()          { return dir.resolve("conductor.db"); }
+    public Path lockFile()    { return dir.resolve("daemon.lock"); }
+    public Path portFile()    { return dir.resolve("daemon.port"); }
+    public Path logFile()     { return dir.resolve("daemon.log"); }
+    public Path flockConfig() { return dir.resolve("flock.properties"); }
 }

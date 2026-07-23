@@ -8,6 +8,9 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.hhagenbuch.conductor.ConductorHome;
 import io.github.hhagenbuch.conductor.Main;
+import io.github.hhagenbuch.conductor.flock.FathomClient;
+import io.github.hhagenbuch.conductor.flock.FlockConfig;
+import io.github.hhagenbuch.conductor.flock.FlockEngine;
 import io.github.hhagenbuch.conductor.lease.Enforcer;
 import io.github.hhagenbuch.conductor.lease.Lease;
 import io.github.hhagenbuch.conductor.transcript.Briefings;
@@ -46,10 +49,14 @@ public final class Daemon {
         }
 
         var registry = new Registry(home.db(), Clock.systemUTC());
-        var server = startServer(registry, new InetSocketAddress("127.0.0.1", 0));
+        var flock = buildFlock(home, registry);
+        var server = startServer(registry, flock, new InetSocketAddress("127.0.0.1", 0));
         int port = server.getAddress().getPort();
         Files.writeString(home.portFile(), Integer.toString(port));
         System.err.println("conductor daemon listening on 127.0.0.1:" + port);
+        if (flock != null) {
+            System.err.println("conductor flock (impact awareness) is ENABLED");
+        }
 
         var done = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -58,24 +65,43 @@ public final class Daemon {
             } catch (IOException ignored) {
                 // best effort; a stale port file is handled by health checks
             }
+            if (flock != null) {
+                flock.close();
+            }
             server.stop(0);
             done.countDown();
         }));
         done.await();
     }
 
+    /// Build the Flock engine from `~/.conductor/flock.properties`, or null when
+    /// impact awareness is off (the default). A disabled Flock adds nothing to
+    /// the daemon; the hook path skips it entirely.
+    private static FlockEngine buildFlock(ConductorHome home, Registry registry) {
+        var config = FlockConfig.load(home);
+        if (!config.enabled()) {
+            return null;
+        }
+        return new FlockEngine(registry, new FathomClient(config.fathomCommand()), config);
+    }
+
     /// Creates and starts the bus HTTP server bound to `addr`. Package-visible
     /// so tests can stand up a real daemon in-process without the file lock or
     /// the blocking latch.
     public static HttpServer startServer(Registry registry, InetSocketAddress addr) throws IOException {
+        return startServer(registry, null, addr);
+    }
+
+    public static HttpServer startServer(Registry registry, FlockEngine flock,
+                                         InetSocketAddress addr) throws IOException {
         var server = HttpServer.create(addr, 0);
         server.setExecutor(Executors.newFixedThreadPool(4));
-        server.createContext("/", exchange -> handle(registry, exchange));
+        server.createContext("/", exchange -> handle(registry, flock, exchange));
         server.start();
         return server;
     }
 
-    static void handle(Registry registry, HttpExchange ex) throws IOException {
+    static void handle(Registry registry, FlockEngine flock, HttpExchange ex) throws IOException {
         try (ex) {
             var path = ex.getRequestURI().getPath();
             var method = ex.getRequestMethod();
@@ -85,7 +111,11 @@ public final class Daemon {
                             .put("ok", true).put("version", Main.VERSION)
                             .put("pid", ProcessHandle.current().pid()));
                 } else if (method.equals("POST") && path.startsWith("/api/hook/")) {
-                    handleHook(registry, ex, path.substring("/api/hook/".length()));
+                    handleHook(registry, flock, ex, path.substring("/api/hook/".length()));
+                } else if (method.equals("POST") && path.equals("/api/flock/snooze")) {
+                    handleFlockSnooze(registry, ex);
+                } else if (method.equals("GET") && path.equals("/api/flock/status")) {
+                    handleFlockStatus(flock, ex);
                 } else if (method.equals("GET") && path.equals("/api/sessions")) {
                     respond(ex, 200, sessionsJson(registry, queryParam(ex, "project")));
                 } else if (method.equals("GET") && path.equals("/api/peers")) {
@@ -117,7 +147,8 @@ public final class Daemon {
 
     /// Hooks forward their raw stdin payloads; all parsing lives here so the
     /// hook scripts stay trivial and fail-open.
-    private static void handleHook(Registry registry, HttpExchange ex, String event) throws Exception {
+    private static void handleHook(Registry registry, FlockEngine flock, HttpExchange ex,
+                                   String event) throws Exception {
         JsonNode payload = JSON.readTree(ex.getRequestBody());
         var sessionId = text(payload, "session_id");
         if (sessionId == null) {
@@ -132,8 +163,15 @@ public final class Daemon {
                 registry.register(sessionId, git.repoIdentity(), git.branch(), cwd,
                         text(payload, "transcript_path"), isChild);
             }
-            case "UserPromptSubmit", "PostToolUse" -> registry.heartbeat(sessionId);
-            case "Stop" -> registry.recordActivity(sessionId, text(payload, "last_assistant_message"));
+            case "UserPromptSubmit" -> registry.heartbeat(sessionId);
+            case "PostToolUse" -> {
+                registry.heartbeat(sessionId);
+                triggerFlock(flock, sessionId);
+            }
+            case "Stop" -> {
+                registry.recordActivity(sessionId, text(payload, "last_assistant_message"));
+                triggerFlock(flock, sessionId);
+            }
             case "SessionEnd" -> registry.end(sessionId);
             default -> {
                 respond(ex, 400, JSON.createObjectNode().put("error", "unknown event " + event));
@@ -141,6 +179,35 @@ public final class Daemon {
             }
         }
         respond(ex, 200, JSON.createObjectNode().put("ok", true));
+    }
+
+    /// Fire a Flock evaluation off the hook, never blocking the hook's response.
+    /// A null engine (Flock off) is a no-op ... the common case.
+    private static void triggerFlock(FlockEngine flock, String sessionId) {
+        if (flock != null) {
+            flock.triggerAsync(sessionId);
+        }
+    }
+
+    private static void handleFlockSnooze(Registry registry, HttpExchange ex) throws Exception {
+        JsonNode body = JSON.readTree(ex.getRequestBody());
+        var session = text(body, "session");
+        var entity = text(body, "entity");
+        if (session == null || entity == null) {
+            respond(ex, 400, JSON.createObjectNode().put("error", "snooze needs 'session' and 'entity'"));
+            return;
+        }
+        long minutes = body.has("minutes") ? body.get("minutes").asLong() : 60;
+        registry.flockSnooze(session, entity, System.currentTimeMillis() + minutes * 60_000);
+        respond(ex, 200, JSON.createObjectNode().put("ok", true)
+                .put("entity", entity).put("minutes", minutes));
+    }
+
+    private static void handleFlockStatus(FlockEngine flock, HttpExchange ex) throws Exception {
+        var out = JSON.createObjectNode();
+        out.put("enabled", flock != null && flock.enabled());
+        out.put("fathom_reachable", flock != null && flock.fathomReachable());
+        respond(ex, 200, out);
     }
 
     private static void handlePost(Registry registry, HttpExchange ex) throws Exception {

@@ -74,7 +74,7 @@ public final class McpShim {
         var r = JSON.createObjectNode();
         r.put("protocolVersion", PROTOCOL);
         r.putObject("capabilities").putObject("tools");
-        r.putObject("serverInfo").put("name", "conductor").put("version", "0.1.0");
+        r.putObject("serverInfo").put("name", "conductor").put("version", "0.2.0");
         return r;
     }
 
@@ -104,6 +104,9 @@ public final class McpShim {
         tools.add(tool("assist",
                 "Spawn a helper session to finish your job faster. Name the slice (task) and the lease-disjoint scopes it should claim; the helper works in its own git worktree, is briefed on your work, and integrates via a PR. Use when you have lease-disjoint work a second session could do in parallel.",
                 assistSchema()));
+        tools.add(tool("snooze",
+                "Mute Flock impact alerts about one graph entity (e.g. an endpoint or DTO you already coordinated on) for a while. Use when a flock alert names a contract you have already discussed, so a churning file stops re-notifying you.",
+                snoozeSchema()));
         var r = JSON.createObjectNode();
         r.set("tools", tools);
         return r;
@@ -130,6 +133,7 @@ public final class McpShim {
                 case "leases" -> leases(port);
                 case "brief_me" -> briefMe(port, args);
                 case "assist" -> assist(port, args);
+                case "snooze" -> snooze(port, args);
                 default -> textResult("conductor: unknown tool " + name, true);
             };
         } catch (Exception e) {
@@ -314,6 +318,27 @@ public final class McpShim {
                 + "and your `inbox` for its progress.", false);
     }
 
+    private ObjectNode snooze(int port, JsonNode args) throws Exception {
+        var entity = args.path("entity").asText("");
+        if (entity.isBlank()) {
+            return textResult("snooze needs the 'entity' from the flock alert (e.g. Symbol:PaymentApi).", true);
+        }
+        var payload = JSON.createObjectNode().put("session", sessionId).put("entity", entity);
+        if (args.has("minutes")) {
+            payload.put("minutes", args.path("minutes").asLong());
+        }
+        var resp = client.postJson(port, "/api/flock/snooze", payload.toString());
+        if (resp.isEmpty()) {
+            return textResult("conductor bus unavailable; snooze not set.", true);
+        }
+        var root = JSON.readTree(resp.get());
+        if (root.path("ok").asBoolean(false)) {
+            return textResult("Snoozed flock alerts about " + root.path("entity").asText()
+                    + " for " + root.path("minutes").asLong() + " minutes.", false);
+        }
+        return textResult(root.path("error").asText("could not snooze"), true);
+    }
+
     // ---- MCP encoding helpers ----
 
     private ObjectNode tool(String name, String description, ObjectNode inputSchema) {
@@ -362,6 +387,18 @@ public final class McpShim {
         props.putObject("model").put("type", "string")
                 .put("description", "Optional model for the helper (default sonnet).");
         s.putArray("required").add("task");
+        return s;
+    }
+
+    private ObjectNode snoozeSchema() {
+        var s = JSON.createObjectNode();
+        s.put("type", "object");
+        var props = s.putObject("properties");
+        props.putObject("entity").put("type", "string")
+                .put("description", "The graph entity id from the flock alert (e.g. Symbol:PaymentApi).");
+        props.putObject("minutes").put("type", "number")
+                .put("description", "How long to mute, in minutes (default 60).");
+        s.putArray("required").add("entity");
         return s;
     }
 

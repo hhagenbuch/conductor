@@ -51,7 +51,23 @@ public final class PsCommand {
             }
         }
         printLeases(client, port.get());
+        printFlock(client, port.get());
         return 0;
+    }
+
+    /// One-line impact-awareness banner, shown only when Flock is enabled, so a
+    /// silent inbox is legible: "reachable" means silence is "no impact",
+    /// "UNREACHABLE" means silence is "not watching".
+    private static void printFlock(DaemonClient client, int port) throws Exception {
+        var body = client.get(port, "/api/flock/status").orElse("{}");
+        var status = JSON.readTree(body);
+        if (!status.path("enabled").asBoolean(false)) {
+            return;
+        }
+        boolean reachable = status.path("fathom_reachable").asBoolean(false);
+        System.out.println();
+        System.out.println("flock (impact awareness): ON, fathom "
+                + (reachable ? "reachable" : "UNREACHABLE (alerts off; leases still enforced)"));
     }
 
     private static void printLeases(DaemonClient client, int port) throws Exception {

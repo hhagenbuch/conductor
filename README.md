@@ -240,6 +240,13 @@ the current shape.
 [entity: Symbol:OrderRequest] [change: BREAKING] [holder: a3f2c118, task: add promo]
 ```
 
+![Two sessions in two repos that never share a file. service-a adds a required field to the OrderRequest DTO; without any commit, the live session in service-b receives an unprompted impact alert naming the breaking change, the entity, and who is making it.](docs/flock.gif)
+
+> The recording drives the real conductor daemon and FlockEngine, a live
+> `fathom serve` MCP subprocess, and mcp-pact's real `SchemaShape` classifier —
+> no API key. Reproduce with `FATHOM_JAR=../fathom/target/fathom.jar vhs
+> demo/flock.tape` (see [demo/flock.md](demo/flock.md)).
+
 It is the join of three projects: **conductor** (who is live, editing what),
 [**fathom**](https://github.com/hhagenbuch/fathom) (who depends on what — a
 multi-repo graph with contract-surface marking), and

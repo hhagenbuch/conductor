@@ -75,6 +75,25 @@ public final class Registry implements AutoCloseable {
                   expires_at  INTEGER NOT NULL,
                   note        TEXT
                 )""");
+            // Flock throttle ledger: the last time a given (source, entity,
+            // consumer) alert fired, so a churning file cannot spam one inbox.
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS flock_alerts (
+                  source_session   TEXT NOT NULL,
+                  entity           TEXT NOT NULL,
+                  consumer_session TEXT NOT NULL,
+                  last_posted_at   INTEGER NOT NULL,
+                  PRIMARY KEY (source_session, entity, consumer_session)
+                )""");
+            // Flock snoozes: a session muting alerts about one entity until a
+            // wall-clock instant. Consulted before every candidate alert.
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS flock_snoozes (
+                  session_id TEXT NOT NULL,
+                  entity     TEXT NOT NULL,
+                  until_at   INTEGER NOT NULL,
+                  PRIMARY KEY (session_id, entity)
+                )""");
         }
     }
 
@@ -164,6 +183,72 @@ public final class Registry implements AutoCloseable {
         return new Lease(rs.getLong("id"), rs.getString("session_id"), rs.getString("repo_id"),
                 Lease.Kind.valueOf(rs.getString("kind")), rs.getString("pattern"),
                 rs.getLong("created_at"), rs.getLong("expires_at"), rs.getString("note"));
+    }
+
+    // ---- flock (impact awareness, Phase 6) ----
+
+    /// Throttle gate for a flock alert. Returns true if an alert for this
+    /// (source, entity, consumer) triple has not fired within `windowMs`, and
+    /// in that case records now as the last-posted time so a caller acting on
+    /// `true` will not re-fire inside the window. Returns false when the last
+    /// alert is still inside the window (throttled). Single-writer, so this
+    /// check-and-set is atomic ... no double-post race across daemon threads.
+    public synchronized boolean flockAllowAndRecord(String sourceSession, String entity,
+                                                    String consumerSession, long windowMs) throws SQLException {
+        long now = clock.millis();
+        Long last = null;
+        try (var ps = conn.prepareStatement(
+                "SELECT last_posted_at FROM flock_alerts"
+                + " WHERE source_session = ? AND entity = ? AND consumer_session = ?")) {
+            ps.setString(1, sourceSession);
+            ps.setString(2, entity);
+            ps.setString(3, consumerSession);
+            try (var rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    last = rs.getLong(1);
+                }
+            }
+        }
+        if (last != null && now - last < windowMs) {
+            return false;
+        }
+        try (var ps = conn.prepareStatement(
+                "INSERT INTO flock_alerts (source_session, entity, consumer_session, last_posted_at)"
+                + " VALUES (?, ?, ?, ?)"
+                + " ON CONFLICT(source_session, entity, consumer_session)"
+                + " DO UPDATE SET last_posted_at = excluded.last_posted_at")) {
+            ps.setString(1, sourceSession);
+            ps.setString(2, entity);
+            ps.setString(3, consumerSession);
+            ps.setLong(4, now);
+            ps.executeUpdate();
+        }
+        return true;
+    }
+
+    /// Mute flock alerts about `entity` for `sessionId` until `untilAt`
+    /// (epoch millis). Re-snoozing the same entity extends the window.
+    public synchronized void flockSnooze(String sessionId, String entity, long untilAt) throws SQLException {
+        try (var ps = conn.prepareStatement(
+                "INSERT INTO flock_snoozes (session_id, entity, until_at) VALUES (?, ?, ?)"
+                + " ON CONFLICT(session_id, entity) DO UPDATE SET until_at = excluded.until_at")) {
+            ps.setString(1, sessionId);
+            ps.setString(2, entity);
+            ps.setLong(3, untilAt);
+            ps.executeUpdate();
+        }
+    }
+
+    /// Whether `sessionId` has an unexpired snooze on `entity`.
+    public synchronized boolean flockSnoozed(String sessionId, String entity) throws SQLException {
+        try (var ps = conn.prepareStatement(
+                "SELECT until_at FROM flock_snoozes WHERE session_id = ? AND entity = ?")) {
+            ps.setString(1, sessionId);
+            ps.setString(2, entity);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() && rs.getLong(1) > clock.millis();
+            }
+        }
     }
 
     public synchronized void register(String sessionId, String projectDir, String gitBranch,

@@ -1,10 +1,18 @@
 # Impact-awareness readiness
 
-conductor is the prerequisite side of the impact-awareness feature
-(RUNBOOK-15). The joint **Phase 6** builds `ImpactEngine` *after* veridex is
-ready — **not here.** This document records the three daemon-reachable seams
-Phase 6 will plug into, so it can wire in without spelunking. Each seam is a
-thin, read-only projection over existing state; none changes external behavior.
+> **Status: Phase 6 (Flock) is built.** The three seams below are now wired
+> into `flock/FlockEngine`; fathom's `resolve_file`/`impacted_by`/contract-
+> surface primitives ship structured output (fathom v0.2.1), and the change
+> classifier reuses mcp-pact-core's `SchemaShape.diff` (mcp-pact v1.2.0). See
+> [DESIGN.md § Flock](DESIGN.md#flock-impact-awareness-phase-6). This document
+> is kept as the record of how the seams were designed to be plugged into.
+
+conductor was the prerequisite side of the impact-awareness feature
+(RUNBOOK-15). The joint **Phase 6** builds the `FlockEngine` on top of fathom
+(graph + contract surfaces) and mcp-pact (`SchemaShape` classification). This
+document records the three daemon-reachable seams Phase 6 plugs into. Each seam
+is a thin, read-only projection over existing state; none changes external
+behavior.
 
 The daemon owns the `Registry` and calls `Briefings`, so all three seams are
 reachable from daemon code today (the message seam is already used by the

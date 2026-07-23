@@ -198,6 +198,32 @@
           }
         }
       ]
+    },
+    {
+      "tool": "snooze",
+      "description": "Mute Flock impact alerts about one graph entity (e.g. an endpoint or DTO you already coordinated on) for a while. Use when a flock alert names a contract you have already discussed, so a churning file stops re-notifying you.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": { "type": "string", "description": "The graph entity id from the flock alert (e.g. Symbol:PaymentApi)." },
+          "minutes": { "type": "number", "description": "How long to mute, in minutes (default 60)." }
+        },
+        "required": ["entity"]
+      },
+      "requiredCapabilities": ["tools"],
+      "interactions": [
+        {
+          "description": "snooze with a missing/blank entity returns a helpful text error, not a crash",
+          "input": { "entity": "" },
+          "response": {
+            "matchers": [
+              { "path": "$.content[0].type", "equals": "text" },
+              { "path": "$.content[0].text", "type": "string" },
+              { "path": "$.isError", "type": "boolean" }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

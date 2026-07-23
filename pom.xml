@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.hhagenbuch</groupId>
   <artifactId>conductor</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <name>conductor</name>
   <description>Session orchestration for Claude Code: a bus, leases, and helper spawning across coding sessions</description>
 
@@ -40,6 +40,14 @@
       <groupId>org.xerial</groupId>
       <artifactId>sqlite-jdbc</artifactId>
       <version>3.53.2.0</version>
+    </dependency>
+    <!-- mcp-pact's schema-shape diff engine, reused verbatim to grade a pending
+         change BREAKING/COMPAT/WARN. The contract-testing engine that stops
+         schema drift in CI now also powers Flock's live change classification. -->
+    <dependency>
+      <groupId>com.github.hhagenbuch.mcp-pact</groupId>
+      <artifactId>mcp-pact-core</artifactId>
+      <version>v1.2.0</version>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

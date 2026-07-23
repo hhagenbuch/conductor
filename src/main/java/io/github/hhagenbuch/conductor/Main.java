@@ -1,6 +1,7 @@
 package io.github.hhagenbuch.conductor;
 
 import io.github.hhagenbuch.conductor.cli.AssistCommand;
+import io.github.hhagenbuch.conductor.cli.FlockCommand;
 import io.github.hhagenbuch.conductor.cli.ObserveCommand;
 import io.github.hhagenbuch.conductor.cli.PsCommand;
 import io.github.hhagenbuch.conductor.daemon.Daemon;
@@ -15,7 +16,7 @@ import java.util.Arrays;
 /// server), and the human-facing CLI (`init`, `remove`, `ps`).
 public final class Main {
 
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.2.0";
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
@@ -29,6 +30,7 @@ public final class Main {
             case "init" -> System.exit(new Installer(ConductorHome.resolve()).init(projectArg(rest)));
             case "remove" -> System.exit(new Installer(ConductorHome.resolve()).remove(projectArg(rest)));
             case "ps" -> System.exit(PsCommand.run(ConductorHome.resolve()));
+            case "flock" -> System.exit(FlockCommand.run(ConductorHome.resolve()));
             case "observe" -> System.exit(ObserveCommand.run(rest));
             case "assist" -> System.exit(AssistCommand.run(ConductorHome.resolve(), rest));
             case "version", "--version", "-v" -> System.out.println("conductor " + VERSION);
@@ -52,6 +54,7 @@ public final class Main {
               init [project-dir]    install conductor hooks into a project (per-user, never committed)
               remove [project-dir]  uninstall conductor hooks from a project
               ps                    show sessions known to the bus
+              flock                 show impact-awareness status (enabled, fathom reachable, tuning)
               observe [project-dir] consent to redacted transcript observation for a project
                                     (local-only, gitignored; --revoke to withdraw)
               assist <session-id>   spawn a helper session (own worktree + branch, briefed,

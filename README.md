@@ -220,6 +220,50 @@ spawn that dies mid-launch leaves no phantom holding scopes.
 > finish-faster measurement is done honestly in `docs/CASE-STUDY.md` from a real
 > coordinated week (Phase 5).
 
+## Flock: impact awareness (across repos)
+
+Leases stop two sessions **editing the same file**. Flock catches the harder
+case: two sessions editing files they will *never* both touch, in different
+repos, where one still breaks the other — "does my change reach your service?"
+
+When a session's pending change touches a **contract surface** (an endpoint, a
+published DTO, an exported type) that another live session **consumes** — and
+the change is **breaking** — that session is told, unprompted, before the break
+lands:
+
+```
+⚠ FLOCK: session a3f2c118 is making a breaking change to service-a
+   Symbol:OrderRequest (a contract service-b consumes via references) —
+   param.newRequired (BREAKING).
+You are live on service-b, which depends on it. Coordinate before relying on
+the current shape.
+[entity: Symbol:OrderRequest] [change: BREAKING] [holder: a3f2c118, task: add promo]
+```
+
+It is the join of three projects: **conductor** (who is live, editing what),
+[**fathom**](https://github.com/hhagenbuch/fathom) (who depends on what — a
+multi-repo graph with contract-surface marking), and
+[**mcp-pact**](https://github.com/hhagenbuch/mcp-pact) (which changes matter —
+its `SchemaShape` diff grades the edit BREAKING/COMPAT/INTERNAL). See
+[DESIGN.md § Flock](docs/DESIGN.md#flock-impact-awareness-phase-6).
+
+Alerts fire only at the intersection of three conditions (a contract-surface
+change, a cross-repo consumer, a live session in the consuming repo), are graded
+so only breaking changes alert by default, and are **advisory only** — Flock
+never blocks a write, it only `post`s. It ships **off**; opt in per project in
+`~/.conductor/flock.properties`:
+
+```properties
+enabled=true
+fathom_cmd=java -jar /abs/path/to/fathom.jar serve --config /abs/fathom.yaml
+throttle_minutes=10
+additive=false
+```
+
+`conductor flock` shows whether it is on and whether the fathom graph is
+reachable (so a silent inbox reads as "no impact", not "not watching"); the
+`snooze` bus tool mutes an entity you have already coordinated on.
+
 ## Roadmap
 
 - [x] **Phase 0** — ground truth + design ([GROUND-TRUTH.md](docs/GROUND-TRUTH.md), [DESIGN.md](docs/DESIGN.md))
@@ -227,7 +271,8 @@ spawn that dies mid-launch leaves no phantom holding scopes.
 - [x] **Phase 2** — leases + fail-open enforcement: `claim` / `release` / `leases`, PreToolUse block on Write/Edit and history-moving git (the war-story GIF)
 - [x] **Phase 3** — transcript awareness + briefing: consent flow (`conductor observe`), redacted digests, `brief_me`
 - [x] **Phase 4** — `assist`: worktree + headless helper spawn with a briefing bundle, PR-based integration
-- [ ] **Phase 5** — dogfood + case study from a real coordinated week
+- [x] **Phase 5** — dogfood + case study from a real coordinated week ([CASE-STUDY.md](docs/CASE-STUDY.md))
+- [x] **Phase 6** — **Flock**: cross-repo impact awareness (conductor × fathom × mcp-pact); advisory alerts on the pending diff, three-way-AND precision, `conductor flock` / `snooze`
 
 ## Contract
 

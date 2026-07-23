@@ -277,6 +277,123 @@ enforcement can only *deny* an action, never perform one. If conductor is
 compromised or wrong, the blast radius is a blocked edit and a misleading
 message, not a bad merge.
 
+## Flock: impact awareness (Phase 6)
+
+Leases answer "are we editing the same file?" Flock answers a harder question
+one layer up: "does my change reach your service?" ... the case where two
+sessions edit files they will *never* both touch, in different repos, and one
+still breaks the other. Boids: each session gets local awareness of its
+neighbors and coordinated behavior emerges with no central controller. The
+package is `flock/`, the engine is the `FlockEngine`, the notices are **flock
+alerts**, the command is `conductor flock`.
+
+| | Collision avoidance (Phase 2) | Impact awareness (Flock) |
+|---|---|---|
+| Question | "Are we editing the same file?" | "Does my change reach your service?" |
+| Data | files/paths per session | dependency graph + contract-surface marks |
+| Scope | one repo, same path | across repos, never the same file |
+| Mechanism | lease + PreToolUse deny | advisory alert routed through the graph |
+| Authority | can DENY the write | INFORMS only, never blocks |
+
+### The join
+
+No one project can do this alone. Flock is the intersection of three:
+**conductor** (who is live, editing what ... the registry and the consent-gated
+transcript digest), **fathom** (who depends on what ... a multi-repo dependency
+graph in one index, with contract-surface marking and an `impacted_by`
+primitive), and **mcp-pact** (which changes actually matter ... its `SchemaShape`
+diff engine, reused verbatim to grade a pending edit BREAKING/COMPAT/INTERNAL).
+The contract-testing engine that stops schema drift in CI now also powers live
+change classification. fathom is a corpus-agnostic graph any client can call;
+Flock is one such client, and the fathom primitives carry no conductor coupling.
+
+### Architecture
+
+```
+ session A ─transcript digest─► conductor daemon ──► FlockEngine
+ session B ─registry──────────►      │                    │
+                                     │   (1) pending change set (files, from the digest)
+                                     │   (2) working-tree `git diff` of those files (shape)
+                                     │   (3) resolve_file → entities   ┐
+                                     │   (4) contract surface?         ├─ fathom serve (stdio JSON-RPC,
+                                     │   (5) impacted_by(entity)       ┘   spawned subprocess)
+                                     │   (6) classify shape delta (mcp-pact SchemaShape)
+                                     │   (7) intersect impacted repos × live sessions
+                                     ▼   (8) dedupe/throttle/consent → post
+                               B.inbox  ◄──────────── advisory flock alert
+```
+
+Steps 3–5 are fathom calls over stdio (fathom `serve` is a stdio MCP server,
+not HTTP ... conductor spawns it like Claude Code spawns conductor's own shim,
+and consumes the tools' `structuredContent`, not their prose). Step 6 is
+mcp-pact. Everything else is conductor. Nothing here writes to a working tree.
+Evaluation is fire-and-forget off the `PostToolUse`/`Stop` hook path, so the
+hook returns immediately and the bus never blocks on a graph query.
+
+### The precision problem
+
+A naive rule ... "A and B share a graph edge → alert" ... cries wolf on every
+internal refactor and gets muted within the hour. A flock alert fires only at
+the intersection of THREE conditions (a three-way AND):
+
+1. **A's pending change touches a contract-surface entity** ... an endpoint, a
+   published DTO, an exported type, a column with external readers. Marked by
+   fathom's domain pack (`surface: true, surface_kind: …`), not guessed by
+   conductor. Private helpers, tests, internal renames are never surface.
+2. **That entity has a cross-repo consumer edge** (`impacted_by` returns it).
+3. **A live session is working in the consuming repo** (registry seam a).
+
+Any one missing → silence (logged at debug so tuning is possible). And even on
+a surface entity, the change is graded against the surface's *shape*:
+**BREAKING** (added required field, removed field, type change, endpoint
+path/verb change, column drop) → alert; **COMPAT** (new optional field, new
+endpoint) → off by default (`--flock-additive`); **INTERNAL** (body changed,
+shape didn't) → silence. The grader reuses mcp-pact-core's `SchemaShape.diff`
+rather than reinventing the taxonomy.
+
+Flock reads the *pending* working-tree diff, not the committed graph: the graph
+supplies edges (which change slowly), the live `git diff` supplies the shape
+(which is the thing in flight). The question is "**if A's pending change lands,
+who breaks?**" ... answered before the commit, which is the entire value.
+
+### The five tensions (Flock)
+
+1. **Noise vs signal.** The three-way AND is the primary defense; BREAKING-only
+   by default is the second. Add per-session **snooze** (mute an entity) and
+   **throttle** (at most one alert per (source-session, entity, consumer-session)
+   per N minutes ... a churning file must not spam). Both are persisted in the
+   registry so they survive a daemon restart. Every suppressed alert is logged.
+   Ships **off by default**; a team turns it on per project.
+2. **Staleness of the graph.** The graph may predate the current work. The
+   classifier prefers the live working-tree diff for *shape* and uses the graph
+   only for *edges*; every flock alert carries the graph's `indexed_at` so the
+   recipient can weigh it; the message vocabulary says edges may be stale.
+3. **False confidence.** Silence must never read as "all clear." The vocabulary
+   is "heads up / coordinate," never "safe." `conductor ps` shows whether Flock
+   is enabled and whether fathom is reachable, so a recipient knows if silence
+   means "no impact" or "not watching."
+4. **Privacy.** A flock alert reveals what another session is doing. Gated by the
+   same per-project transcript consent as Phase 3, on **both** sides: A's change
+   is inspected only if A's project consents, and B is told only if B's project
+   consents. Redaction still applies ... the alert names the entity and the shape
+   delta, never A's prompts. Sessions in unconsented projects contribute their
+   registry facts but not their file set.
+5. **Authority.** Flock NEVER blocks ... no lease, no PreToolUse deny, only a
+   `post`. The same Surgeon doctrine as everything else here: the component with
+   cross-cutting visibility gets observation and notification, never a pen. If a
+   flock alert is wrong (stale edge, misclassified change), the blast radius is
+   one ignorable message, not a blocked or bad edit ... which is exactly why it
+   can afford to be heuristic where leases must be exact.
+
+### Non-goals (Flock v1)
+
+No blocking on impact (advisory only); no transitive multi-hop alerting (A→B
+direct consumers only; A→B→C is roadmap ... the graph supports it, the noise
+math needs care first); no cross-machine sessions; no auto-fix or PR from an
+alert (that is medic's territory ... a future join could file a medic incident
+from a confirmed break); no impact awareness without both a consenting source
+and a consenting consumer project.
+
 ## Stack
 
 - **Daemon:** Java 25 + SQLite (castaway precedent), localhost HTTP,
@@ -304,6 +421,12 @@ message, not a bad merge.
    inbox wiring, PR integration. Demo #2: the finish-faster GIF.
 5. **Dogfood + case study.** Two real RFC weeks run as conductor-coordinated
    sessions; CASE-STUDY.md from real bus logs; playbook chapter.
+6. **Flock (impact awareness).** The join with fathom (graph + contract
+   surfaces) and mcp-pact (`SchemaShape` classification): cross-repo,
+   contract-scoped, live-session-targeted advisory alerts fired on the pending
+   diff. Three-way AND for precision; advisory-only authority. Demo #3: the
+   systems-of-systems GIF ... A adds a required field, B is told before the
+   break lands.
 
 ## Non-goals (v1)
 

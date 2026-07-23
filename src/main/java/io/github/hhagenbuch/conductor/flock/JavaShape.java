@@ -9,8 +9,8 @@ import java.util.regex.Pattern;
 
 /// Extracts a JSON-Schema-shaped view of a Java DTO ... its fields, their JSON
 /// types, and which are required ... so mcp-pact's `SchemaShape` can diff two
-/// versions of the same DTO and grade the change. Handles the two shapes RCCL
-/// request/response types actually take: a Java `record` (component list) and a
+/// versions of the same DTO and grade the change. Handles the two shapes a
+/// request/response type usually takes: a Java `record` (component list) and a
 /// plain class with field declarations.
 ///
 /// This is deliberately a lightweight source parser, not a compiler: it reads
